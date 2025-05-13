@@ -1,0 +1,36 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'binary_size_explorer'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=binary_size_explorer",
+                    "--package=binary_size_explorer"
+                ],
+                "filter": {
+                    "name": "binary_size_explorer",
+                    "kind": "bin"
+                }
+            },
+            "sourceLanguages": ["rust"],
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "name": "Debug",
+            "program": "${workspaceFolder}/target/debug/binary_size_explorer",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "rust: cargo build"
+        }
+    ]
+}
