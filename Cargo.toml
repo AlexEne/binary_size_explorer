@@ -21,6 +21,7 @@ twiggy-analyze = "0.7"
 twiggy-opt = { version = "0.7" }
 egui_extras = { version = "0.31" }
 json = { version = "0.12" }
+egui_dock = { version = "0.16", features = ["serde"] }
 
 [profile.release]
 opt-level = 2

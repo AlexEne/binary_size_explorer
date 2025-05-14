@@ -1,18 +1,66 @@
-use std::{fs::File, io::BufWriter, path::PathBuf, u32};
-
+use crate::code_viewer::show_code;
+use crate::{data_provider::DataProvider, data_provider_twiggy::DataProviderTwiggy};
 use egui_file_dialog::FileDialog;
+use std::{io::BufWriter, path::PathBuf, u32};
 use twiggy_opt::CommonCliOptions;
-
-use crate::{
-    code_viewer::show_code,
-    data_provider::{self, DataProvider},
-    data_provider_twiggy::DataProviderTwiggy,
-};
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct FileEntry {
     path: PathBuf,
     data_provider: Option<DataProviderTwiggy>,
+}
+
+struct TabViewer {}
+
+impl egui_dock::TabViewer for TabViewer {
+    type Tab = DockTab;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        tab.title.clone().into()
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
+        match &tab.contents {
+            TabContent::SourceCodeViewer { code } => {
+                //ui.label(code.clone());
+                show_code(ui, code, "rs");
+            }
+        }
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct DockTab {
+    contents: TabContent,
+    title: String,
+}
+
+impl DockTab {
+    fn new(title: impl Into<String>) -> DockTab {
+        DockTab {
+            contents: TabContent::SourceCodeViewer {
+                code: r"
+pub struct CodeExample {
+    name: String,
+    age: u32,
+}
+
+impl CodeExample {
+    fn ui(&mut self, ui: &mut egui::Ui) {
+      // Saves us from writing `&mut self.name` etc
+      let Self { name, age } = self;
+    }
+}"
+                .into(),
+            },
+            title: title.into(),
+        }
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+enum TabContent {
+    SourceCodeViewer { code: String },
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -24,8 +72,6 @@ pub struct TemplateApp {
     #[serde(skip)]
     file_dialog: FileDialog,
 
-    code: String,
-
     analyzer_state: Option<AnalyzerState>,
     twiggy_top_response: Option<String>,
 
@@ -34,6 +80,8 @@ pub struct TemplateApp {
     file_entries: Vec<FileEntry>,
 
     value: f32,
+
+    tree: egui_dock::DockState<DockTab>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -42,6 +90,25 @@ enum AnalyzerState {
         path: PathBuf,
         wasm_file_data: Box<[u8]>,
     },
+}
+
+fn create_tree() -> egui_dock::DockState<DockTab> {
+    let mut tree = egui_dock::DockState::new(vec![DockTab::new("First"), DockTab::new("Second")]);
+
+    // You can modify the tree before constructing the dock
+    let [a, b] = tree.main_surface_mut().split_left(
+        egui_dock::NodeIndex::root(),
+        0.3,
+        vec![DockTab::new("Third")],
+    );
+    let [_, _] = tree
+        .main_surface_mut()
+        .split_below(a, 0.7, vec![DockTab::new("Fourth")]);
+    let [_, _] = tree
+        .main_surface_mut()
+        .split_below(b, 0.5, vec![DockTab::new("Fifth")]);
+
+    tree
 }
 
 impl Default for TemplateApp {
@@ -57,17 +124,7 @@ impl Default for TemplateApp {
             twiggy_top_response: None,
             file_entries: Vec::new(),
 
-            code: r"
-pub struct CodeExample {
-    name: String,
-    age: u32,
-}
-
-impl CodeExample {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        // Saves us from writing `&mut self.name` etc
-        let Self { name, age } = self;"
-                .into(),
+            tree: create_tree(),
         }
     }
 }
@@ -160,29 +217,25 @@ impl eframe::App for TemplateApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
-            ui.heading("eframe template");
+            // ui.heading("eframe template");
 
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(&mut self.label);
-            });
+            // ui.horizontal(|ui| {
+            //     ui.label("Write something: ");
+            //     ui.text_edit_singleline(&mut self.label);
+            // });
 
-            ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                self.value += 1.0;
-            }
+            // ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
+            // if ui.button("Increment").clicked() {
+            //     self.value += 1.0;
+            // }
 
-            ui.separator();
+            // ui.separator();
 
-            show_code(ui, &self.code, "rs");
-
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/main/",
-                "Source code."
-            ));
+            egui_dock::DockArea::new(&mut self.tree)
+                .style(egui_dock::Style::from_egui(ctx.style().as_ref()))
+                .show(ctx, &mut TabViewer {});
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                powered_by_egui_and_eframe(ui);
                 egui::warn_if_debug_build(ui);
             });
         });
@@ -297,7 +350,8 @@ impl TemplateApp {
             match state {
                 AnalyzerState::AnalyzeWasm { path, .. } => {
                     let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
-                    let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
+                    let mut items =
+                        twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
 
                     let mut top_opts = twiggy_opt::Top::new();
                     top_opts.set_max_items(u32::MAX);

@@ -1,5 +1,3 @@
-use std::fmt::format;
-
 use json::JsonValue;
 
 use crate::data_provider::{DataProvider, FunctionProperty};
