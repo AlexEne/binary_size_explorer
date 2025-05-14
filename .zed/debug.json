@@ -1,0 +1,11 @@
+[
+  {
+    "adapter": "CodeLLDB",
+    "label": "First_debug (CodeLLDB)",
+    "program": "G:\\Rust\\binary_size_explorer\\target\\debug\\binary_size_explorer.exe",
+    "cwd": "G:\\Rust\\binary_size_explorer",
+    "args": [],
+    "env": {},
+    "stop_on_entry": false
+  }
+]

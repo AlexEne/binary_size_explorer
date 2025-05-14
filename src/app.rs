@@ -176,40 +176,15 @@ impl eframe::App for TemplateApp {
 
         egui::SidePanel::right("RightPanel")
             .resizable(true)
-            // .width_range(100.0..=800.0)
             .show(ctx, |ui| {
-                ui.vertical_centered(|ui| {
-                    if let Some(twiggy_top) = &self.twiggy_top_response {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            // ui.with_layout(
-                            //     egui::Layout::top_down(egui::Align::LEFT).with_cross_justify(false),
-                            //     |ui| {
-                            //         // ui.text_edit_multiline(&mut twiggy_top.as_str());
-                            //         // show_code(ui, twiggy_top, "cpp");
-                            //         self.table_ui(ui);
-                            //     },
-                            // );
-
-                            use egui_extras::{Size, StripBuilder};
-                            StripBuilder::new(ui)
-                                .size(Size::remainder().at_least(100.0)) // for the table
-                                .vertical(|mut strip| {
-                                    strip.cell(|ui| {
-                                        egui::ScrollArea::horizontal().show(ui, |ui| {
-                                            if !self.file_entries.is_empty() {
-                                                if let Some(data_provider) =
-                                                    self.file_entries[0].data_provider.as_ref()
-                                                {
-                                                    self.functions_explorer
-                                                        .show_functions_table(ui, data_provider);
-                                                }
-                                            }
-                                        });
-                                    });
-                                });
-                        });
+                if let Some(twiggy_top) = &self.twiggy_top_response {
+                    if !self.file_entries.is_empty() {
+                        if let Some(data_provider) = &self.file_entries[0].data_provider {
+                            self.functions_explorer
+                                .show_functions_table(ui, data_provider);
+                        }
                     }
-                });
+                }
             });
 
         egui::SidePanel::left("LeftPanel")

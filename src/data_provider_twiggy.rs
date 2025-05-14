@@ -3,9 +3,9 @@ use json::JsonValue;
 use crate::data_provider::{DataProvider, FunctionProperty};
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct FunctionData {
-    function_property: FunctionProperty,
-    debug_info: FunctionPropertyDebugInfo,
+pub struct FunctionData {
+    pub function_property: FunctionProperty,
+    pub debug_info: FunctionPropertyDebugInfo,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
