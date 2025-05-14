@@ -1,13 +1,14 @@
 use crate::code_viewer::show_code;
-use crate::{data_provider::DataProvider, data_provider_twiggy::DataProviderTwiggy};
+use crate::data_provider_twiggy::DataProviderTwiggy;
+use crate::functions_exporer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use std::{io::BufWriter, path::PathBuf, u32};
 use twiggy_opt::CommonCliOptions;
 
 #[derive(serde::Deserialize, serde::Serialize)]
-struct FileEntry {
-    path: PathBuf,
-    data_provider: Option<DataProviderTwiggy>,
+pub struct FileEntry {
+    pub path: PathBuf,
+    pub data_provider: Option<DataProviderTwiggy>,
 }
 
 struct TabViewer {}
@@ -67,19 +68,15 @@ enum TabContent {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    label: String,
-
     #[serde(skip)]
     file_dialog: FileDialog,
 
     analyzer_state: Option<AnalyzerState>,
     twiggy_top_response: Option<String>,
 
-    reversed_table: bool,
+    functions_explorer: FunctionsExplorer,
 
     file_entries: Vec<FileEntry>,
-
-    value: f32,
 
     tree: egui_dock::DockState<DockTab>,
 }
@@ -96,17 +93,11 @@ fn create_tree() -> egui_dock::DockState<DockTab> {
     let mut tree = egui_dock::DockState::new(vec![DockTab::new("First"), DockTab::new("Second")]);
 
     // You can modify the tree before constructing the dock
-    let [a, b] = tree.main_surface_mut().split_left(
+    let [_, _] = tree.main_surface_mut().split_left(
         egui_dock::NodeIndex::root(),
         0.3,
         vec![DockTab::new("Third")],
     );
-    let [_, _] = tree
-        .main_surface_mut()
-        .split_below(a, 0.7, vec![DockTab::new("Fourth")]);
-    let [_, _] = tree
-        .main_surface_mut()
-        .split_below(b, 0.5, vec![DockTab::new("Fifth")]);
 
     tree
 }
@@ -114,12 +105,11 @@ fn create_tree() -> egui_dock::DockState<DockTab> {
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
-            label: "Hello World!".to_owned(),
             file_dialog: FileDialog::new(),
 
-            value: 2.7,
             analyzer_state: None,
-            reversed_table: false,
+
+            functions_explorer: FunctionsExplorer::default(),
 
             twiggy_top_response: None,
             file_entries: Vec::new(),
@@ -206,7 +196,14 @@ impl eframe::App for TemplateApp {
                                 .vertical(|mut strip| {
                                     strip.cell(|ui| {
                                         egui::ScrollArea::horizontal().show(ui, |ui| {
-                                            self.table_ui(ui, 0);
+                                            if !self.file_entries.is_empty() {
+                                                if let Some(data_provider) =
+                                                    self.file_entries[0].data_provider.as_ref()
+                                                {
+                                                    self.functions_explorer
+                                                        .show_functions_table(ui, data_provider);
+                                                }
+                                            }
                                         });
                                     });
                                 });
@@ -232,11 +229,6 @@ impl eframe::App for TemplateApp {
             // The central panel the region left after adding TopPanel's and SidePanel's
             // ui.heading("eframe template");
 
-            // ui.horizontal(|ui| {
-            //     ui.label("Write something: ");
-            //     ui.text_edit_singleline(&mut self.label);
-            // });
-
             // ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
             // if ui.button("Increment").clicked() {
             //     self.value += 1.0;
@@ -258,110 +250,6 @@ impl eframe::App for TemplateApp {
 }
 
 impl TemplateApp {
-    fn table_ui(&mut self, ui: &mut egui::Ui, file_entry_idx: usize) {
-        let Some(file_entry) = self.file_entries.get(file_entry_idx) else {
-            return;
-        };
-        let Some(data_provider) = file_entry.data_provider.as_ref() else {
-            return;
-        };
-
-        let table_rows_count = data_provider.get_functions_count();
-
-        let available_height = ui.available_height();
-        let mut table = egui_extras::TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(egui_extras::Column::auto())
-            .column(egui_extras::Column::auto())
-            .column(egui_extras::Column::auto())
-            .column(egui_extras::Column::auto())
-            .column(egui_extras::Column::auto())
-            .column(egui_extras::Column::auto())
-            // .column(
-            //     egui_extras::Column::remainder()
-            //         .at_least(40.0)
-            //         .clip(true)
-            //         .resizable(true),
-            // )
-            // .column(egui_extras::Column::auto())
-            // .column(egui_extras::Column::remainder())
-            // .column(egui_extras::Column::remainder())
-            .min_scrolled_height(0.0)
-            .max_scroll_height(available_height);
-
-        // Prepare it so it is clickable and we see when we hover rows.
-        table = table.sense(egui::Sense::click());
-
-        table
-            .header(20.0, |mut header| {
-                header.col(|ui| {
-                    egui::Sides::new().show(
-                        ui,
-                        |ui| {
-                            ui.strong("Size (bytes)");
-                        },
-                        |ui| {
-                            self.reversed_table ^= ui
-                                .button(if self.reversed_table { "⬆" } else { "⬇" })
-                                .clicked();
-                        },
-                    );
-                });
-                header.col(|ui| {
-                    ui.strong("Shallow Size (bytes)");
-                });
-                header.col(|ui| {
-                    ui.strong("Size (%)");
-                });
-                header.col(|ui| {
-                    ui.strong("Shallow Size (%)");
-                });
-                header.col(|ui| {
-                    ui.strong("Name");
-                });
-                header.col(|ui| {
-                    ui.strong("Mangled Name");
-                });
-            })
-            .body(|mut body| {
-                body.rows(18.0, table_rows_count, |mut row| {
-                    let row_index = if self.reversed_table {
-                        table_rows_count - 1 - row.index()
-                    } else {
-                        row.index()
-                    };
-
-                    // row.set_selected(self.selection.contains(&row_index));
-                    row.col(|ui| {
-                        ui.label(data_provider.str_get_size_bytes_at(row_index));
-                    });
-
-                    row.col(|ui| {
-                        ui.label(data_provider.str_get_shallow_size_bytes_at(row_index));
-                    });
-
-                    row.col(|ui| {
-                        ui.label(data_provider.str_get_retained_size_percent_at(row_index));
-                    });
-
-                    row.col(|ui| {
-                        ui.label(data_provider.str_get_shallow_size_percent_at(row_index));
-                    });
-
-                    row.col(|ui| {
-                        ui.label("demangled_name_here");
-                    });
-
-                    row.col(|ui| {
-                        ui.label(format!("{}", data_provider.str_get_name_at(row_index)));
-                    });
-
-                    // self.toggle_row_selection(row_index, &row.response());
-                });
-            });
-    }
     fn update_state(&mut self) {
         let mut next_state = None;
 
