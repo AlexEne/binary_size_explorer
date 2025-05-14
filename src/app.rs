@@ -257,6 +257,7 @@ impl TemplateApp {
 
         let available_height = ui.available_height();
         let mut table = egui_extras::TableBuilder::new(ui)
+            .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(egui_extras::Column::auto())
@@ -276,6 +277,8 @@ impl TemplateApp {
             // .column(egui_extras::Column::remainder())
             .min_scrolled_height(0.0)
             .max_scroll_height(available_height);
+
+        table = table.sense(egui::Sense::click());
 
         table
             .header(20.0, |mut header| {
@@ -340,6 +343,8 @@ impl TemplateApp {
                     row.col(|ui| {
                         ui.label(format!("{}", data_provider.str_get_name_at(row_index)));
                     });
+
+                    // self.toggle_row_selection(row_index, &row.response());
                 });
             });
     }
