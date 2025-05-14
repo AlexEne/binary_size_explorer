@@ -4,11 +4,13 @@ use json::JsonValue;
 
 use crate::data_provider::{DataProvider, FunctionProperty};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct FunctionData {
     function_property: FunctionProperty,
     debug_info: FunctionPropertyDebugInfo,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct FunctionPropertyDebugInfo {
     demangled_name: Option<String>,
     size_bytes: String,
@@ -17,6 +19,7 @@ struct FunctionPropertyDebugInfo {
     retained_size_percent: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct DataProviderTwiggy {
     raw_data: Vec<FunctionData>,
 }

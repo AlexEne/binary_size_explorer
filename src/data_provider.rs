@@ -1,5 +1,6 @@
 struct WasmObjectData {}
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FunctionProperty {
     pub raw_name: String,
     pub size_bytes: u32,

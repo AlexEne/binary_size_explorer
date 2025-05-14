@@ -1,11 +1,19 @@
-use std::{io::BufWriter, path::PathBuf, u32};
+use std::{fs::File, io::BufWriter, path::PathBuf, u32};
 
 use egui_file_dialog::FileDialog;
 use twiggy_opt::CommonCliOptions;
 
 use crate::{
-    code_viewer::show_code, data_provider::DataProvider, data_provider_twiggy::DataProviderTwiggy,
+    code_viewer::show_code,
+    data_provider::{self, DataProvider},
+    data_provider_twiggy::DataProviderTwiggy,
 };
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct FileEntry {
+    path: PathBuf,
+    data_provider: Option<DataProviderTwiggy>,
+}
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -15,24 +23,25 @@ pub struct TemplateApp {
 
     #[serde(skip)]
     file_dialog: FileDialog,
-    picked_file: Option<PathBuf>,
 
     code: String,
 
     analyzer_state: Option<AnalyzerState>,
     twiggy_top_response: Option<String>,
 
-    #[serde(skip)]
-    data_provider_twiggy: Option<DataProviderTwiggy>,
-
     reversed_table: bool,
+
+    file_entries: Vec<FileEntry>,
 
     value: f32,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
 enum AnalyzerState {
-    AnalyzeWasm { wasm_file_data: Box<[u8]> },
+    AnalyzeWasm {
+        path: PathBuf,
+        wasm_file_data: Box<[u8]>,
+    },
 }
 
 impl Default for TemplateApp {
@@ -40,14 +49,13 @@ impl Default for TemplateApp {
         Self {
             label: "Hello World!".to_owned(),
             file_dialog: FileDialog::new(),
-            picked_file: None,
 
             value: 2.7,
             analyzer_state: None,
             reversed_table: false,
 
             twiggy_top_response: None,
-            data_provider_twiggy: None,
+            file_entries: Vec::new(),
 
             code: r"
 pub struct CodeExample {
@@ -104,18 +112,11 @@ impl eframe::App for TemplateApp {
 
                 self.file_dialog.update(ctx);
                 if let Some(path) = self.file_dialog.picked() {
-                    self.picked_file = Some(path.to_path_buf());
-                }
-
-                let has_file_picked = self.picked_file.is_some();
-                let btn = ui.add_enabled(has_file_picked, egui::Button::new("Analyze"));
-                if btn.clicked() {
-                    if let Some(path) = self.picked_file.clone() {
-                        let file_data = std::fs::read(path).unwrap();
-                        self.analyzer_state = Some(AnalyzerState::AnalyzeWasm {
-                            wasm_file_data: file_data.into_boxed_slice(),
-                        });
-                    }
+                    let file_data = std::fs::read(path).unwrap();
+                    self.analyzer_state = Some(AnalyzerState::AnalyzeWasm {
+                        path: path.to_path_buf(),
+                        wasm_file_data: file_data.into_boxed_slice(),
+                    });
                 }
 
                 ui.add_space(16.0);
@@ -148,7 +149,7 @@ impl eframe::App for TemplateApp {
                                 .vertical(|mut strip| {
                                     strip.cell(|ui| {
                                         egui::ScrollArea::horizontal().show(ui, |ui| {
-                                            self.table_ui(ui);
+                                            self.table_ui(ui, 0);
                                         });
                                     });
                                 });
@@ -191,8 +192,11 @@ impl eframe::App for TemplateApp {
 }
 
 impl TemplateApp {
-    fn table_ui(&mut self, ui: &mut egui::Ui) {
-        let Some(data_provider) = self.data_provider_twiggy.as_ref() else {
+    fn table_ui(&mut self, ui: &mut egui::Ui, file_entry_idx: usize) {
+        let Some(file_entry) = self.file_entries.get(file_entry_idx) else {
+            return;
+        };
+        let Some(data_provider) = file_entry.data_provider.as_ref() else {
             return;
         };
 
@@ -291,13 +295,9 @@ impl TemplateApp {
 
         if let Some(state) = self.analyzer_state.take() {
             match state {
-                AnalyzerState::AnalyzeWasm { .. } => {
+                AnalyzerState::AnalyzeWasm { path, .. } => {
                     let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
-                    let mut items = twiggy_parser::read_and_parse(
-                        self.picked_file.as_ref().unwrap(),
-                        opts.parse_mode(),
-                    )
-                    .unwrap();
+                    let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
 
                     let mut top_opts = twiggy_opt::Top::new();
                     top_opts.set_max_items(u32::MAX);
@@ -315,7 +315,11 @@ impl TemplateApp {
 
                     if let Some(twiggy_top_response) = &self.twiggy_top_response {
                         let json = json::parse(twiggy_top_response).unwrap();
-                        self.data_provider_twiggy = Some(DataProviderTwiggy::from_json(&json));
+
+                        self.file_entries.push(FileEntry {
+                            path,
+                            data_provider: Some(DataProviderTwiggy::from_json(&json)),
+                        })
                     }
                 }
             }
