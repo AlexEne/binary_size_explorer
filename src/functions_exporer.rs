@@ -94,7 +94,7 @@ impl FunctionsExplorer {
                                             curr_item_index += 1;
                                         }
                                     }
-                                    
+
                                     if curr_item_index >= table_rows_count {
                                         return;
                                     }
@@ -104,12 +104,15 @@ impl FunctionsExplorer {
                                     }
 
                                     row.col(|ui| {
-                                        ui.label(data_provider.str_get_size_bytes_at(curr_item_index));
+                                        ui.label(
+                                            data_provider.str_get_size_bytes_at(curr_item_index),
+                                        );
                                     });
 
                                     row.col(|ui| {
                                         ui.label(
-                                            data_provider.str_get_shallow_size_bytes_at(curr_item_index),
+                                            data_provider
+                                                .str_get_shallow_size_bytes_at(curr_item_index),
                                         );
                                     });
 
@@ -165,8 +168,10 @@ impl FunctionsExplorer {
                         ui.separator();
 
                         ui.label("Stats");
-                        ui.label(format!("Filtered size: {:?}", self.total_size));
-                        ui.label(format!("Filtered size %: {:.4}", self.total_percent));
+                        ui.label(format!(
+                            "Filtered size: {:#?} Bytes ({:.4})",
+                            self.total_size, self.total_percent
+                        ));
                     });
                 });
             });
