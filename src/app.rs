@@ -186,7 +186,7 @@ impl eframe::App for TemplateApp {
 
         egui::SidePanel::right("RightPanel")
             .resizable(true)
-            .width_range(100.0..=800.0)
+            // .width_range(100.0..=800.0)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     if let Some(twiggy_top) = &self.twiggy_top_response {
@@ -213,6 +213,19 @@ impl eframe::App for TemplateApp {
                         });
                     }
                 });
+            });
+
+        egui::SidePanel::left("LeftPanel")
+            .resizable(true)
+            .width_range(100.0..=400.0)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    egui::CollapsingHeader::new("OpenFiles")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            ui.label("TreeViewEntry");
+                        })
+                })
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -278,6 +291,7 @@ impl TemplateApp {
             .min_scrolled_height(0.0)
             .max_scroll_height(available_height);
 
+        // Prepare it so it is clickable and we see when we hover rows.
         table = table.sense(egui::Sense::click());
 
         table
