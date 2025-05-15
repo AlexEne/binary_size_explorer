@@ -231,6 +231,7 @@ impl TemplateApp {
         if let Some(state) = self.analyzer_state.take() {
             match state {
                 AnalyzerState::AnalyzeWasm { path, .. } => {
+                    self.file_entries.clear(); // Not supporting multiple for now.
                     let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
                     let mut items =
                         twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
