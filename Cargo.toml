@@ -6,7 +6,9 @@ edition = "2024"
 
 [dependencies]
 egui = "0.31"
+egui_dock = { version = "0.16", features = ["serde"] }
 egui-file-dialog = "0.10.0"
+egui_extras = { version = "0.31" }
 eframe = { version = "0.31", default-features = false, features = [
     "default_fonts", # Embed the default egui fonts.
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
@@ -14,14 +16,11 @@ eframe = { version = "0.31", default-features = false, features = [
     "wayland",       # To support Linux (and CI)
     "x11",           # To support older Linux distributions (restores one of the default features)
 ] }
-serde = { version = "1.0.219", features = ["derive"] }
 env_logger = "0.11.8"
-twiggy-parser = "0.7"
+serde = { version = "1.0.219", features = ["derive"] }
 twiggy-analyze = "0.7"
 twiggy-opt = { version = "0.7" }
-egui_extras = { version = "0.31" }
-json = { version = "0.12" }
-egui_dock = { version = "0.16", features = ["serde"] }
+twiggy-parser = "0.7"
 
 [profile.release]
 opt-level = 2

@@ -72,7 +72,7 @@ impl FunctionsExplorer {
                                         ui.strong("Name");
                                     });
                                     header.col(|ui| {
-                                        ui.strong("Mangled Name");
+                                        ui.strong("Monomorphization of");
                                     });
                                 })
                                 .body(|body| {
@@ -105,8 +105,9 @@ impl FunctionsExplorer {
 
                                         row.col(|ui| {
                                             ui.label(
-                                                data_provider
-                                                    .str_get_size_bytes_at(curr_item_index),
+                                                data_provider.str_get_retained_size_bytes_at(
+                                                    curr_item_index,
+                                                ),
                                             );
                                         });
 
@@ -134,12 +135,16 @@ impl FunctionsExplorer {
                                         });
 
                                         row.col(|ui| {
-                                            ui.label("demangled_name_here");
+                                            ui.label(
+                                                data_provider.str_get_name_at(curr_item_index),
+                                            );
                                         });
 
                                         row.col(|ui| {
                                             ui.label(
-                                                data_provider.str_get_name_at(curr_item_index),
+                                                data_provider
+                                                    .str_get_monomorphization_of_at(curr_item_index)
+                                                    .unwrap_or_default(),
                                             );
                                         });
 
@@ -163,7 +168,7 @@ impl FunctionsExplorer {
                                     for i in 0..data_provider.get_functions_count() {
                                         let property = data_provider.get_property_at(i);
                                         if property.raw_name.contains(&self.filter_text) {
-                                            self.total_size += property.size_bytes;
+                                            self.total_size += property.shallow_size_bytes;
                                             self.total_percent += property.shallow_size_percent;
                                         }
                                     }
