@@ -2,8 +2,7 @@ use crate::code_viewer::show_code;
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_exporer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
-use std::{io::BufWriter, path::PathBuf, u32};
-use twiggy_opt::CommonCliOptions;
+use std::path::PathBuf;
 
 #[derive(serde::Deserialize, serde::Serialize)]
 pub struct FileEntry {
@@ -72,7 +71,6 @@ pub struct TemplateApp {
     file_dialog: FileDialog,
 
     analyzer_state: Option<AnalyzerState>,
-    twiggy_top_response: Option<String>,
 
     functions_explorer: FunctionsExplorer,
 
@@ -111,7 +109,6 @@ impl Default for TemplateApp {
 
             functions_explorer: FunctionsExplorer::default(),
 
-            twiggy_top_response: None,
             file_entries: Vec::new(),
 
             tree: create_tree(),
@@ -177,12 +174,10 @@ impl eframe::App for TemplateApp {
         egui::SidePanel::right("RightPanel")
             .resizable(true)
             .show(ctx, |ui| {
-                if let Some(twiggy_top) = &self.twiggy_top_response {
-                    if !self.file_entries.is_empty() {
-                        if let Some(data_provider) = &self.file_entries[0].data_provider {
-                            self.functions_explorer
-                                .show_functions_table(ui, data_provider);
-                        }
+                if !self.file_entries.is_empty() {
+                    if let Some(data_provider) = &self.file_entries[0].data_provider {
+                        self.functions_explorer
+                            .show_functions_table(ui, data_provider);
                     }
                 }
             });
@@ -232,32 +227,15 @@ impl TemplateApp {
             match state {
                 AnalyzerState::AnalyzeWasm { path, .. } => {
                     self.file_entries.clear(); // Not supporting multiple for now.
-                    let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
-                    let mut items =
-                        twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
 
-                    let mut top_opts = twiggy_opt::Top::new();
-                    top_opts.set_max_items(u32::MAX);
-                    top_opts.set_retained(true);
-                    let data = twiggy_analyze::top(&mut items, &top_opts).unwrap();
+                    let data_provider = Some(DataProviderTwiggy::from_path(&path));
 
-                    let mut buf = BufWriter::new(Vec::new());
-                    data.emit_json(&items, &mut buf).unwrap();
+                    self.file_entries.push(FileEntry {
+                        path,
+                        data_provider,
+                    });
 
-                    let bytes = buf.into_inner().unwrap();
-                    self.twiggy_top_response = String::from_utf8(bytes)
-                        .ok()
-                        .and_then(|s| json::parse(&s).ok())
-                        .map(|s| s.pretty(4));
-
-                    if let Some(twiggy_top_response) = &self.twiggy_top_response {
-                        let json = json::parse(twiggy_top_response).unwrap();
-
-                        self.file_entries.push(FileEntry {
-                            path,
-                            data_provider: Some(DataProviderTwiggy::from_json(&json)),
-                        })
-                    }
+                    next_state = None;
                 }
             }
         }

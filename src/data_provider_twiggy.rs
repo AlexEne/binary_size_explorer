@@ -1,4 +1,6 @@
-use json::JsonValue;
+use std::path;
+
+use twiggy_opt::CommonCliOptions;
 
 use crate::data_provider::{DataProvider, FunctionProperty};
 
@@ -9,11 +11,12 @@ pub struct FunctionData {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct FunctionPropertyDebugInfo {
+pub struct FunctionPropertyDebugInfo {
     demangled_name: Option<String>,
-    size_bytes: String,
+    monomorphization_of: Option<String>,
     shallow_size_bytes: String,
     shallow_size_percent: String,
+    retained_size_bytes: String,
     retained_size_percent: String,
 }
 
@@ -23,36 +26,55 @@ pub struct DataProviderTwiggy {
 }
 
 impl DataProviderTwiggy {
-    pub fn from_json(json: &JsonValue) -> Self {
-        let mut raw_data = Vec::new();
+    pub fn from_path<P: AsRef<path::Path>>(path: P) -> Self {
+        let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
 
-        for function in json.members() {
-            let raw_name = function["name"].to_string();
-            // let demangled_name = function["demangled_name"].as_str().map(|s| s.to_string());
-            let size_bytes = function["retained_size"].as_u32().unwrap_or(0);
-            let shallow_size_bytes = function["shallow_size"].as_u32().unwrap_or(0);
-            let shallow_size_percent = function["shallow_size_percent"].as_f32().unwrap_or(0.0);
-            let retained_size_percent = function["retained_size_percent"].as_f32().unwrap_or(0.0);
+        let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
+        items.compute_retained_sizes();
+
+        let mut raw_data = Vec::new();
+        let total_size = items.size();
+        for item in items.iter() {
+            // Filter out the meta root item
+            if item.id() == items.meta_root() {
+                continue;
+            }
+
+            let name = item.name();
+            let monomorphization_of = item.monomorphization_of();
+
+            let shallow_size_bytes = item.size();
+            let shallow_size_percent = (shallow_size_bytes as f32 / total_size as f32) * 100.0;
+
+            let retained_size_bytes = items.retained_size(item.id());
+            let retained_size_percent = (retained_size_bytes as f32 / total_size as f32) * 100.0;
 
             raw_data.push(FunctionData {
                 function_property: FunctionProperty {
-                    raw_name,
-                    size_bytes,
-                    shallow_size_bytes,
-                    shallow_size_percent,
-                    retained_size_percent,
+                    raw_name: name.to_string(),
+                    shallow_size_bytes: shallow_size_bytes,
+                    shallow_size_percent: shallow_size_percent,
+                    retained_size_bytes,
+                    retained_size_percent: retained_size_percent,
                 },
                 debug_info: FunctionPropertyDebugInfo {
-                    demangled_name: None, // TODO add demangled name
-                    size_bytes: format!("{}", size_bytes),
+                    demangled_name: Some(name.to_string()),
+                    monomorphization_of: monomorphization_of.map(ToOwned::to_owned),
                     shallow_size_bytes: format!("{}", shallow_size_bytes),
                     shallow_size_percent: format!("{:.2}%", shallow_size_percent),
+                    retained_size_bytes: format!("{}", retained_size_bytes),
                     retained_size_percent: format!("{:.2}%", retained_size_percent),
                 },
             });
         }
 
-        DataProviderTwiggy { raw_data }
+        raw_data.sort_by(|a, b| {
+            a.function_property
+                .shallow_size_bytes
+                .cmp(&b.function_property.shallow_size_bytes)
+        });
+
+        Self { raw_data }
     }
 }
 
@@ -69,12 +91,8 @@ impl DataProvider for DataProviderTwiggy {
         &self.raw_data[idx].function_property.raw_name
     }
 
-    fn str_get_demangled_name_at(&self, idx: usize) -> Option<&str> {
-        self.raw_data[idx].debug_info.demangled_name.as_deref()
-    }
-
-    fn str_get_size_bytes_at(&self, idx: usize) -> &str {
-        &self.raw_data[idx].debug_info.size_bytes
+    fn str_get_monomorphization_of_at(&self, idx: usize) -> Option<&str> {
+        self.raw_data[idx].debug_info.monomorphization_of.as_deref()
     }
 
     fn str_get_shallow_size_bytes_at(&self, idx: usize) -> &str {
@@ -85,6 +103,9 @@ impl DataProvider for DataProviderTwiggy {
         &self.raw_data[idx].debug_info.shallow_size_percent
     }
 
+    fn str_get_retained_size_bytes_at(&self, idx: usize) -> &str {
+        &self.raw_data[idx].debug_info.retained_size_bytes
+    }
     fn str_get_retained_size_percent_at(&self, idx: usize) -> &str {
         &self.raw_data[idx].debug_info.retained_size_percent
     }
