@@ -1,6 +1,7 @@
 use std::path;
 
 use twiggy_opt::CommonCliOptions;
+use wasmparser::{BinaryReader, FunctionBody};
 
 use crate::data_provider::{DataProvider, FunctionProperty};
 
@@ -30,8 +31,10 @@ impl DataProviderTwiggy {
         let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
 
         let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
+
         items.compute_retained_sizes();
 
+        let wasm_data = std::fs::read(path).unwrap();
         let mut raw_data = Vec::new();
         let total_size = items.size();
         for item in items.iter() {
@@ -48,6 +51,37 @@ impl DataProviderTwiggy {
 
             let retained_size_bytes = items.retained_size(item.id());
             let retained_size_percent = (retained_size_bytes as f32 / total_size as f32) * 100.0;
+
+            let id_num = item.id().serializable();
+            let func_section = (id_num >> 32) & 0xFFFF;
+            let func_index = id_num & 0xFFFF;
+            println!("Processing for item {:?}", item,);
+
+            let range = item.bytes_range().clone();
+            match item.kind() {
+                twiggy_ir::ItemKind::Code(code) => {
+                    // let code_reader = wasmparser::CodeSectionReader::new(
+                    //     wasmparser::BinaryReader::new(&wasm_data[range], 0),
+                    // )
+                    // .unwrap();
+
+                    let body_raw =
+                        FunctionBody::new(wasmparser::BinaryReader::new(&wasm_data[range], 0));
+                    println!("Function body");
+                    println!("Funciton body_raw reder: {:?}", body_raw);
+
+                    let mut reader = body_raw.get_operators_reader().unwrap();
+                    while let Ok(op) = reader.read() {
+                        println!("Op: {:?}", op);
+                    }
+                }
+                twiggy_ir::ItemKind::Data(data) => (),
+                twiggy_ir::ItemKind::Debug(debug_info) => (),
+                twiggy_ir::ItemKind::Misc(misc) => (),
+            }
+
+            // get_function_bytes(&wasm_data, func_section as _, func_index as _);
+            // let function_body = FunctionBody::new(BinaryReader::new(buffer_ref), 0);
 
             raw_data.push(FunctionData {
                 function_property: FunctionProperty {
@@ -109,4 +143,70 @@ impl DataProvider for DataProviderTwiggy {
     fn str_get_retained_size_percent_at(&self, idx: usize) -> &str {
         &self.raw_data[idx].debug_info.retained_size_percent
     }
+}
+
+pub fn get_function_bytes(
+    wasm_data: &[u8],
+    section_idx: u32,
+    entry_idx: u32,
+) -> anyhow::Result<Vec<u8>> {
+    // let section_idx = function_id.section();
+    // let entry_idx = function_id.entry();
+
+    let mut parser = wasmparser::Parser::new(0);
+    let mut offset = 0;
+
+    // Find the code section
+    while offset < wasm_data.len() {
+        let (payload, bytes_read) =
+            match parser.parse(&wasm_data[offset..], offset == wasm_data.len()) {
+                Ok(wasmparser::Chunk::Parsed { consumed, payload }) => (payload, consumed),
+                Ok(wasmparser::Chunk::NeedMoreData { .. }) => {
+                    return Err(anyhow::anyhow!("Unexpected end of WASM binary"));
+                }
+                Err(e) => return Err(anyhow::anyhow!("Failed to parse WASM: {}", e)),
+            };
+
+        match payload {
+            wasmparser::Payload::CodeSectionStart { count, range, .. } => {
+                // Found the code section
+                let mut code_reader = wasmparser::CodeSectionReader::new(
+                    wasmparser::BinaryReader::new(&wasm_data[range.start..range.end], range.start),
+                )?;
+
+                // Skip to our target function
+                // for i in 0..entry_idx {
+                //     if i >= count {
+                //         return Err(anyhow::anyhow!("Function index out of range"));
+                //     }
+                //     code_reader.
+                // }
+
+                // // Get our target function
+                // let function = code_reader.read()?;
+
+                if let Some(section_data) = code_reader
+                    .into_iter_with_offsets()
+                    .skip(entry_idx as _)
+                    .next()
+                {
+                    let (func_size, body) = section_data?;
+                    println!("FuncSize: {:?} Body: {:?}", func_size, body);
+
+                    let mut reader = body.get_operators_reader().unwrap();
+                    while let Ok(op) = reader.read() {
+                        println!("Op: {:?}", op);
+                    }
+                }
+                return Ok(vec![]);
+            }
+            _ => {
+                println!("Payload wasn't code section!");
+            }
+        }
+
+        offset += bytes_read;
+    }
+
+    Err(anyhow::anyhow!("Could not find function bytes"))
 }

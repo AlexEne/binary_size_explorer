@@ -18,9 +18,13 @@ eframe = { version = "0.31", default-features = false, features = [
 ] }
 env_logger = "0.11.8"
 serde = { version = "1.0.219", features = ["derive"] }
-twiggy-analyze = "0.7"
-twiggy-opt = { version = "0.7" }
-twiggy-parser = "0.7"
+twiggy-analyze = { path = "../twiggy/analyze", version = "0.7" }
+twiggy-opt = { path = "../twiggy/opt", version = "0.7" }
+twiggy-parser = { path = "../twiggy/parser", version = "0.7" }
+twiggy-ir = { path = "../twiggy/ir", version = "0.7" }
+anyhow = "1.0.98"
+# twiggy-ir = "0.7.0"
+wasmparser = "0.230.0"
 
 [profile.release]
 opt-level = 2

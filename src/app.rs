@@ -77,7 +77,6 @@ pub struct TemplateApp {
 
     file_entries: Vec<FileEntry>,
 
-
     tree: egui_dock::DockState<DockTab>,
 }
 
