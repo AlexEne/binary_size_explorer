@@ -51,9 +51,9 @@ impl FunctionsExplorer {
                                             |ui| {
                                                 self.reversed_size_bytes ^= ui
                                                     .button(if self.reversed_size_bytes {
-                                                        "⬆"
-                                                    } else {
                                                         "⬇"
+                                                    } else {
+                                                        "⬆"
                                                     })
                                                     .clicked();
                                             },

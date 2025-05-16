@@ -69,12 +69,14 @@ enum TabContent {
 pub struct TemplateApp {
     #[serde(skip)]
     file_dialog: FileDialog,
+    last_path_picked: PathBuf,
 
     analyzer_state: Option<AnalyzerState>,
 
     functions_explorer: FunctionsExplorer,
 
     file_entries: Vec<FileEntry>,
+
 
     tree: egui_dock::DockState<DockTab>,
 }
@@ -104,6 +106,7 @@ impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             file_dialog: FileDialog::new(),
+            last_path_picked: "".into(),
 
             analyzer_state: None,
 
@@ -156,11 +159,14 @@ impl eframe::App for TemplateApp {
 
                 self.file_dialog.update(ctx);
                 if let Some(path) = self.file_dialog.picked() {
-                    let file_data = std::fs::read(path).unwrap();
-                    self.analyzer_state = Some(AnalyzerState::AnalyzeWasm {
-                        path: path.to_path_buf(),
-                        wasm_file_data: file_data.into_boxed_slice(),
-                    });
+                    if path != self.last_path_picked {
+                        let file_data = std::fs::read(path).unwrap();
+                        self.analyzer_state = Some(AnalyzerState::AnalyzeWasm {
+                            path: path.to_path_buf(),
+                            wasm_file_data: file_data.into_boxed_slice(),
+                        });
+                        self.last_path_picked = path.into();
+                    }
                 }
 
                 ui.add_space(16.0);
