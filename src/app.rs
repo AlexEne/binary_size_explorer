@@ -1,6 +1,7 @@
 use crate::code_viewer::show_code;
+use crate::data_provider::DataProvider;
 use crate::data_provider_twiggy::DataProviderTwiggy;
-use crate::functions_exporer::FunctionsExplorer;
+use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use std::path::PathBuf;
 
@@ -22,7 +23,6 @@ impl egui_dock::TabViewer for TabViewer {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match &tab.contents {
             TabContent::SourceCodeViewer { code } => {
-                //ui.label(code.clone());
                 show_code(ui, code, "rs");
             }
         }
@@ -36,22 +36,10 @@ struct DockTab {
 }
 
 impl DockTab {
-    fn new(title: impl Into<String>) -> DockTab {
+    fn new(title: impl Into<String>, code_string: &str) -> DockTab {
         DockTab {
             contents: TabContent::SourceCodeViewer {
-                code: r"
-pub struct CodeExample {
-    name: String,
-    age: u32,
-}
-
-impl CodeExample {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-      // Saves us from writing `&mut self.name` etc
-      let Self { name, age } = self;
-    }
-}"
-                .into(),
+                code: code_string.into(),
             },
             title: title.into(),
         }
@@ -69,6 +57,8 @@ enum TabContent {
 pub struct TemplateApp {
     #[serde(skip)]
     file_dialog: FileDialog,
+
+    #[serde(skip)]
     last_path_picked: PathBuf,
 
     analyzer_state: Option<AnalyzerState>,
@@ -88,19 +78,6 @@ enum AnalyzerState {
     },
 }
 
-fn create_tree() -> egui_dock::DockState<DockTab> {
-    let mut tree = egui_dock::DockState::new(vec![DockTab::new("First"), DockTab::new("Second")]);
-
-    // You can modify the tree before constructing the dock
-    let [_, _] = tree.main_surface_mut().split_left(
-        egui_dock::NodeIndex::root(),
-        0.3,
-        vec![DockTab::new("Third")],
-    );
-
-    tree
-}
-
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
@@ -113,7 +90,10 @@ impl Default for TemplateApp {
 
             file_entries: Vec::new(),
 
-            tree: create_tree(),
+            tree: egui_dock::DockState::new(vec![
+                DockTab::new("First", ""),
+                DockTab::new("Second", ""),
+            ]),
         }
     }
 }
@@ -183,6 +163,22 @@ impl eframe::App for TemplateApp {
                     if let Some(data_provider) = &self.file_entries[0].data_provider {
                         self.functions_explorer
                             .show_functions_table(ui, data_provider);
+
+                        if let Some(idx) = self.functions_explorer.selected_row {
+                            let code_string: String =
+                                if let Some(data_provider) = &self.file_entries[0].data_provider {
+                                    data_provider.get_locals_at(idx).join("\n")
+                                        + "\n"
+                                        + &data_provider.get_ops_at(idx).join("\n")
+                                } else {
+                                    String::new()
+                                };
+                            self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
+                                tab.contents = TabContent::SourceCodeViewer {
+                                    code: code_string.clone(),
+                                };
+                            });
+                        }
                     }
                 }
             });
@@ -201,16 +197,6 @@ impl eframe::App for TemplateApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            // ui.heading("eframe template");
-
-            // ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            // if ui.button("Increment").clicked() {
-            //     self.value += 1.0;
-            // }
-
-            // ui.separator();
-
             egui_dock::DockArea::new(&mut self.tree)
                 .style(egui_dock::Style::from_egui(ctx.style().as_ref()))
                 .show(ctx, &mut TabViewer {});
