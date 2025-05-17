@@ -19,6 +19,8 @@ pub struct FunctionPropertyDebugInfo {
     shallow_size_percent: String,
     retained_size_bytes: String,
     retained_size_percent: String,
+    locals: Vec<String>,
+    function_ops: Vec<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -86,8 +88,6 @@ impl DataProviderTwiggy {
                     shallow_size_percent: shallow_size_percent,
                     retained_size_bytes,
                     retained_size_percent: retained_size_percent,
-                    locals,
-                    function_ops,
                 },
                 debug_info: FunctionPropertyDebugInfo {
                     demangled_name: Some(name.to_string()),
@@ -96,6 +96,8 @@ impl DataProviderTwiggy {
                     shallow_size_percent: format!("{:.2}%", shallow_size_percent),
                     retained_size_bytes: format!("{}", retained_size_bytes),
                     retained_size_percent: format!("{:.2}%", retained_size_percent),
+                    locals,
+                    function_ops,
                 },
             });
         }
@@ -118,6 +120,16 @@ fn get_locals_and_ops_for_function(
     let mut ops = Vec::new();
     let function_body =
         wasmparser::FunctionBody::new(BinaryReader::new(&data[range.start..range.end], 0));
+
+    // for i in range.start..range.end {
+    //     print!("{:02?} ", i);
+    // }
+    // println!();
+
+    // for i in range.start..range.end {
+    //     print!("{:02?} ", data[i]);
+    // }
+    // println!();
 
     if let Ok(mut locals_reader) = function_body.get_locals_reader() {
         let mut local_index = 0;
@@ -168,6 +180,12 @@ impl DataProvider for DataProviderTwiggy {
     }
     fn str_get_retained_size_percent_at(&self, idx: usize) -> &str {
         &self.raw_data[idx].debug_info.retained_size_percent
+    }
+    fn get_locals_at(&self, idx: usize) -> &[String] {
+        &self.raw_data[idx].debug_info.locals
+    }
+    fn get_ops_at(&self, idx: usize) -> &[String] {
+        &self.raw_data[idx].debug_info.function_ops
     }
 }
 

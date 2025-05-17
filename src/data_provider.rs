@@ -5,8 +5,6 @@ pub struct FunctionProperty {
     pub shallow_size_percent: f32,
     pub retained_size_bytes: u32,
     pub retained_size_percent: f32,
-    pub locals: Vec<String>,
-    pub function_ops: Vec<String>,
 }
 
 pub trait DataProvider {
@@ -17,5 +15,7 @@ pub trait DataProvider {
     fn str_get_shallow_size_percent_at(&self, idx: usize) -> &str;
     fn str_get_retained_size_bytes_at(&self, idx: usize) -> &str;
     fn str_get_retained_size_percent_at(&self, idx: usize) -> &str;
+    fn get_locals_at(&self, idx: usize) -> &[String];
+    fn get_ops_at(&self, idx: usize) -> &[String];
     fn get_property_at(&self, idx: usize) -> &FunctionProperty;
 }

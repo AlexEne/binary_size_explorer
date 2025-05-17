@@ -1,6 +1,6 @@
 use crate::code_viewer::show_code;
 use crate::data_provider::DataProvider;
-use crate::data_provider_twiggy::{self, DataProviderTwiggy};
+use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use std::path::PathBuf;
@@ -23,7 +23,6 @@ impl egui_dock::TabViewer for TabViewer {
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match &tab.contents {
             TabContent::SourceCodeViewer { code } => {
-                //ui.label(code.clone());
                 show_code(ui, code, "rs");
             }
         }
@@ -37,10 +36,11 @@ struct DockTab {
 }
 
 impl DockTab {
-    fn new(title: impl Into<String>, data_provider: &dyn DataProvider) -> DockTab {
-        let code_string: String = data_provider.locals.join("\n") + "\n" + &data_provider.code.join("\n");
+    fn new(title: impl Into<String>, code_string: &str) -> DockTab {
         DockTab {
-            contents: TabContent::SourceCodeViewer { code: code_string },
+            contents: TabContent::SourceCodeViewer {
+                code: code_string.into(),
+            },
             title: title.into(),
         }
     }
@@ -78,19 +78,6 @@ enum AnalyzerState {
     },
 }
 
-fn create_tree(file_entry: &FileEntry) -> egui_dock::DockState<DockTab> {
-    let mut tree = egui_dock::DockState::new(vec![DockTab::new(file_entry.data_provider), DockTab::new(file_entry.data_provider)]);
-
-    // You can modify the tree before constructing the dock
-    let [_, _] = tree.main_surface_mut().split_left(
-        egui_dock::NodeIndex::root(),
-        0.3,
-        vec![DockTab::new(file_entry.data_provider)],
-    );
-
-    tree
-}
-
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
@@ -103,7 +90,10 @@ impl Default for TemplateApp {
 
             file_entries: Vec::new(),
 
-            tree: create_tree(),
+            tree: egui_dock::DockState::new(vec![
+                DockTab::new("First", ""),
+                DockTab::new("Second", ""),
+            ]),
         }
     }
 }
@@ -173,6 +163,22 @@ impl eframe::App for TemplateApp {
                     if let Some(data_provider) = &self.file_entries[0].data_provider {
                         self.functions_explorer
                             .show_functions_table(ui, data_provider);
+
+                        if let Some(idx) = self.functions_explorer.selected_row {
+                            let code_string: String =
+                                if let Some(data_provider) = &self.file_entries[0].data_provider {
+                                    data_provider.get_locals_at(idx).join("\n")
+                                        + "\n"
+                                        + &data_provider.get_ops_at(idx).join("\n")
+                                } else {
+                                    String::new()
+                                };
+                            self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
+                                tab.contents = TabContent::SourceCodeViewer {
+                                    code: code_string.clone(),
+                                };
+                            });
+                        }
                     }
                 }
             });

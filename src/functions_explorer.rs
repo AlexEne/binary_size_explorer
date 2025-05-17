@@ -4,7 +4,7 @@ use crate::data_provider::DataProvider;
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 pub struct FunctionsExplorer {
     reversed_size_bytes: bool,
-    selected_row: Option<usize>,
+    pub selected_row: Option<usize>,
 
     filter_text: String,
     // filtered_count: usize,
