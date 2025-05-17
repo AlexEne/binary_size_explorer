@@ -145,6 +145,7 @@ impl eframe::App for TemplateApp {
                             wasm_file_data: file_data.into_boxed_slice(),
                         });
                         self.last_path_picked = path.into();
+                        self.functions_explorer = FunctionsExplorer::default();
                     }
                 }
 
