@@ -55,12 +55,6 @@ impl DataProviderTwiggy {
             let retained_size_percent = (retained_size_bytes as f32 / total_size as f32) * 100.0;
 
             let id_num = item.id().serializable();
-            let code_section_index = (id_num >> 32) & 0xFFFF;
-            let index = id_num & 0xFFFF;
-            println!(
-                "Processing for item {:?} {} {}",
-                item, code_section_index, index
-            );
 
             let range = item.bytes_range().clone();
             let mut locals = Vec::new();
@@ -76,9 +70,9 @@ impl DataProviderTwiggy {
                     // Decent reference here: https://blog.ttulka.com/learning-webassembly-2-wasm-binary-format/
                     (locals, function_ops) = get_locals_and_ops_for_function(&wasm_data, &range);
                 }
-                twiggy_ir::ItemKind::Data(data) => (),
-                twiggy_ir::ItemKind::Debug(debug_info) => (),
-                twiggy_ir::ItemKind::Misc(misc) => (),
+                twiggy_ir::ItemKind::Data(_data) => (),
+                twiggy_ir::ItemKind::Debug(_debug_info) => (),
+                twiggy_ir::ItemKind::Misc(_misc) => (),
             }
 
             raw_data.push(FunctionData {
