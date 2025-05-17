@@ -5,6 +5,8 @@ pub struct FunctionProperty {
     pub shallow_size_percent: f32,
     pub retained_size_bytes: u32,
     pub retained_size_percent: f32,
+    pub locals: Vec<String>,
+    pub function_ops: Vec<String>,
 }
 
 pub trait DataProvider {

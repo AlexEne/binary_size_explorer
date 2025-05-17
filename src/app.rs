@@ -1,5 +1,6 @@
 use crate::code_viewer::show_code;
-use crate::data_provider_twiggy::DataProviderTwiggy;
+use crate::data_provider::DataProvider;
+use crate::data_provider_twiggy::{self, DataProviderTwiggy};
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use std::path::PathBuf;
@@ -36,23 +37,10 @@ struct DockTab {
 }
 
 impl DockTab {
-    fn new(title: impl Into<String>) -> DockTab {
+    fn new(title: impl Into<String>, data_provider: &dyn DataProvider) -> DockTab {
+        let code_string: String = data_provider.locals.join("\n") + "\n" + &data_provider.code.join("\n");
         DockTab {
-            contents: TabContent::SourceCodeViewer {
-                code: r"
-pub struct CodeExample {
-    name: String,
-    age: u32,
-}
-
-impl CodeExample {
-    fn ui(&mut self, ui: &mut egui::Ui) {
-      // Saves us from writing `&mut self.name` etc
-      let Self { name, age } = self;
-    }
-}"
-                .into(),
-            },
+            contents: TabContent::SourceCodeViewer { code: code_string },
             title: title.into(),
         }
     }
@@ -69,7 +57,7 @@ enum TabContent {
 pub struct TemplateApp {
     #[serde(skip)]
     file_dialog: FileDialog,
-    
+
     #[serde(skip)]
     last_path_picked: PathBuf,
 
@@ -90,14 +78,14 @@ enum AnalyzerState {
     },
 }
 
-fn create_tree() -> egui_dock::DockState<DockTab> {
-    let mut tree = egui_dock::DockState::new(vec![DockTab::new("First"), DockTab::new("Second")]);
+fn create_tree(file_entry: &FileEntry) -> egui_dock::DockState<DockTab> {
+    let mut tree = egui_dock::DockState::new(vec![DockTab::new(file_entry.data_provider), DockTab::new(file_entry.data_provider)]);
 
     // You can modify the tree before constructing the dock
     let [_, _] = tree.main_surface_mut().split_left(
         egui_dock::NodeIndex::root(),
         0.3,
-        vec![DockTab::new("Third")],
+        vec![DockTab::new(file_entry.data_provider)],
     );
 
     tree
@@ -203,16 +191,6 @@ impl eframe::App for TemplateApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            // ui.heading("eframe template");
-
-            // ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            // if ui.button("Increment").clicked() {
-            //     self.value += 1.0;
-            // }
-
-            // ui.separator();
-
             egui_dock::DockArea::new(&mut self.tree)
                 .style(egui_dock::Style::from_egui(ctx.style().as_ref()))
                 .show(ctx, &mut TabViewer {});
