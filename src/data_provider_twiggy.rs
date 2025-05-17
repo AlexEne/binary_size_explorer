@@ -137,8 +137,8 @@ fn get_locals_and_ops_for_function(
     }
 
     let mut body = function_body.get_operators_reader().unwrap();
-    while let Ok(op) = body.read() {
-        ops.push(format!("{:?}", op));
+    while let Ok((op, offset)) = body.read_with_offset() {
+        ops.push(format!("{:#06x}: {:?}", offset + range.start, op));
     }
 
     (locals, ops)
