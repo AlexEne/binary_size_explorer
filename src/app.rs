@@ -1,6 +1,6 @@
 use crate::code_viewer::show_code;
 use crate::data_provider_twiggy::DataProviderTwiggy;
-use crate::functions_exporer::FunctionsExplorer;
+use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use std::path::PathBuf;
 
@@ -69,6 +69,8 @@ enum TabContent {
 pub struct TemplateApp {
     #[serde(skip)]
     file_dialog: FileDialog,
+    
+    #[serde(skip)]
     last_path_picked: PathBuf,
 
     analyzer_state: Option<AnalyzerState>,

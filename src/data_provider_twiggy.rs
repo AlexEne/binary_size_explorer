@@ -60,13 +60,9 @@ impl DataProviderTwiggy {
             let range = item.bytes_range().clone();
             match item.kind() {
                 twiggy_ir::ItemKind::Code(code) => {
-                    // let code_reader = wasmparser::CodeSectionReader::new(
-                    //     wasmparser::BinaryReader::new(&wasm_data[range], 0),
-                    // )
-                    // .unwrap();
-
-                    let body_raw =
-                        FunctionBody::new(wasmparser::BinaryReader::new(&wasm_data[range], 0));
+                    let mut reader = wasmparser::BinaryReader::new(&wasm_data[range], 0);
+                    let func_code_size = reader.read_bytes(1).unwrap();
+                    let body_raw = FunctionBody::new(reader);
                     println!("Function body");
                     println!("Funciton body_raw reder: {:?}", body_raw);
 
