@@ -22,6 +22,8 @@ impl FunctionsExplorer {
                 .size(Size::exact(120.0))
                 .vertical(|mut strip| {
                     strip.cell(|ui| {
+                        let old_selectable_labels = ui.style().interaction.selectable_labels;
+                        ui.style_mut().interaction.selectable_labels = false;
                         egui::ScrollArea::horizontal().show(ui, |ui| {
                             let available_height = ui.available_height();
                             let mut table = egui_extras::TableBuilder::new(ui)
@@ -154,6 +156,7 @@ impl FunctionsExplorer {
                                     });
                                 });
                         });
+                        ui.style_mut().interaction.selectable_labels = old_selectable_labels;
                     });
                     strip.cell(|ui| {
                         ui.vertical(|ui| {
