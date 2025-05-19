@@ -145,8 +145,10 @@ impl FunctionsExplorer {
 
                             ui.label("Stats");
                             ui.label(format!(
-                                "Total count: {}",
-                                filtered_view.get_filtered_items_count()
+                                "Total count: {} Total size (Bytes): {}, Total %: {:.4?}",
+                                filtered_view.get_filtered_items_count(),
+                                filtered_view.get_total_size(),
+                                filtered_view.get_total_percent(),
                             ));
                         });
                     });

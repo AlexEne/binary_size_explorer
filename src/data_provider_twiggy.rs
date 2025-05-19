@@ -16,6 +16,8 @@ pub struct DataProviderTwiggy {
     raw_data: Vec<FunctionData>,
 
     items_filtered: Vec<usize>,
+    total_size: u32,
+    total_percent: f32,
 
     filter: Filter,
 }
@@ -97,6 +99,8 @@ impl DataProviderTwiggy {
 
         let mut provider = DataProviderTwiggy {
             raw_data,
+            total_size: 0,
+            total_percent: 0.0,
             items_filtered: Vec::new(),
             filter: Filter::NameFilter { name: "".into() }, // A bit hacky 2 step initialization.
         };
@@ -191,21 +195,28 @@ impl FilterView for DataProviderTwiggy {
     fn set_filter(&mut self, filter: crate::data_provider::Filter) {
         if self.filter != filter {
             self.items_filtered.clear();
+            self.total_size = 0;
+            self.total_percent = 0.0;
             for idx in 0..self.raw_data.len() {
-                match &filter {
+                let item = &self.raw_data[idx].function_property;
+                let added = match &filter {
                     Filter::NameFilter { name } => {
-                        if self.raw_data[idx]
-                            .function_property
-                            .raw_name
-                            .to_lowercase()
-                            .contains(name)
-                        {
+                        if item.raw_name.to_lowercase().contains(name) {
                             self.items_filtered.push(idx);
+                            true
+                        } else {
+                            false
                         }
                     }
                     Filter::All => {
                         self.items_filtered.push(idx);
+                        true
                     }
+                };
+
+                if added {
+                    self.total_size += item.shallow_size_bytes;
+                    self.total_percent += item.shallow_size_percent;
                 }
             }
         }
@@ -214,6 +225,14 @@ impl FilterView for DataProviderTwiggy {
     fn get_item_at(&self, idx: usize) -> &FunctionPropertyDebugInfo {
         let original_idx = self.items_filtered[idx];
         &self.raw_data[original_idx].debug_info
+    }
+
+    fn get_total_size(&self) -> u32 {
+        self.total_size
+    }
+
+    fn get_total_percent(&self) -> f32 {
+        self.total_percent
     }
 }
 

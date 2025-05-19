@@ -54,4 +54,6 @@ pub trait FilterView {
     fn get_filtered_items_count(&self) -> usize;
     fn get_item_at(&self, idx: usize) -> &FunctionPropertyDebugInfo;
     fn set_filter(&mut self, filter: Filter);
+    fn get_total_size(&self) -> u32;
+    fn get_total_percent(&self) -> f32;
 }
