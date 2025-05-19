@@ -32,7 +32,18 @@ impl DataProviderTwiggy {
 
         let wasm_data = std::fs::read(path).unwrap();
         let mut raw_data = Vec::new();
-        let total_size = items.size();
+
+        let ignore_item_by_name = |name: &str| -> bool {
+            name.starts_with("custom section '.debug_") || name == "\"function names\" subsection"
+        };
+
+        let mut total_size = 0;
+        for item in items.iter() {
+            if !ignore_item_by_name(item.name()) {
+                total_size += item.size();
+            }
+        }
+
         for item in items.iter() {
             // Filter out the meta root item
             if item.id() == items.meta_root() {
@@ -41,6 +52,11 @@ impl DataProviderTwiggy {
 
             let name = item.name();
             let monomorphization_of = item.monomorphization_of();
+
+            if ignore_item_by_name(item.name()) {
+                // Skip debug info from every stat
+                continue;
+            }
 
             let shallow_size_bytes = item.size();
             let shallow_size_percent = (shallow_size_bytes as f32 / total_size as f32) * 100.0;
@@ -179,12 +195,6 @@ impl DataProvider for DataProviderTwiggy {
     fn str_get_retained_size_percent_at(&self, idx: usize) -> &str {
         &self.raw_data[idx].debug_info.retained_size_percent
     }
-    fn get_locals_at(&self, idx: usize) -> &[String] {
-        &self.raw_data[idx].debug_info.locals
-    }
-    fn get_ops_at(&self, idx: usize) -> &[String] {
-        &self.raw_data[idx].debug_info.function_ops
-    }
 }
 
 impl FilterView for DataProviderTwiggy {
@@ -233,6 +243,16 @@ impl FilterView for DataProviderTwiggy {
 
     fn get_total_percent(&self) -> f32 {
         self.total_percent
+    }
+    
+    fn get_locals_at(&self, idx: usize) -> &[String] {
+        let original_idx = self.items_filtered[idx];
+        &self.raw_data[original_idx].debug_info.locals
+    }
+    
+    fn get_ops_at(&self, idx: usize) -> &[String] {
+        let original_idx = self.items_filtered[idx];
+        &self.raw_data[original_idx].debug_info.function_ops
     }
 }
 

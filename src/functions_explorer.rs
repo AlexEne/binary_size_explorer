@@ -132,6 +132,7 @@ impl FunctionsExplorer {
                             ui.horizontal(|ui| {
                                 ui.label("Filter: ");
                                 if ui.text_edit_singleline(&mut self.filter_text).changed() {
+                                    self.selected_row = None; // Reset selected row.
                                     if !self.filter_text.is_empty() {
                                         filtered_view
                                             .set_filter(Filter::name_filter(&self.filter_text));
@@ -145,9 +146,9 @@ impl FunctionsExplorer {
 
                             ui.label("Stats");
                             ui.label(format!(
-                                "Total count: {} Total size (Bytes): {}, Total %: {:.4?}",
+                                "Total count: {} Total size (MB): {:.2}, Total %: {:.4?}%",
                                 filtered_view.get_filtered_items_count(),
-                                filtered_view.get_total_size(),
+                                filtered_view.get_total_size() as f32 / (1024.0 * 1024.0),
                                 filtered_view.get_total_percent(),
                             ));
                         });

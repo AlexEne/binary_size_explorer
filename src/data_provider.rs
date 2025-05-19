@@ -28,8 +28,6 @@ pub trait DataProvider {
     fn str_get_shallow_size_percent_at(&self, idx: usize) -> &str;
     fn str_get_retained_size_bytes_at(&self, idx: usize) -> &str;
     fn str_get_retained_size_percent_at(&self, idx: usize) -> &str;
-    fn get_locals_at(&self, idx: usize) -> &[String];
-    fn get_ops_at(&self, idx: usize) -> &[String];
     fn get_property_at(&self, idx: usize) -> &FunctionProperty;
 }
 
@@ -56,4 +54,6 @@ pub trait FilterView {
     fn set_filter(&mut self, filter: Filter);
     fn get_total_size(&self) -> u32;
     fn get_total_percent(&self) -> f32;
+    fn get_locals_at(&self, idx: usize) -> &[String];
+    fn get_ops_at(&self, idx: usize) -> &[String];
 }
