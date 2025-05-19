@@ -1,5 +1,5 @@
 use crate::code_viewer::show_code;
-use crate::data_provider::DataProvider;
+use crate::data_provider::{DataProvider, FilterView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
