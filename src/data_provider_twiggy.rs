@@ -1,9 +1,9 @@
+use crate::data_provider::{
+    DataProvider, Filter, FilterView, FunctionProperty, FunctionPropertyDebugInfo,
+};
 use std::{ops::Range, path};
-
 use twiggy_opt::CommonCliOptions;
-use wasmparser::{BinaryReader, FunctionBody};
-
-use crate::data_provider::{DataProvider, FunctionProperty};
+use wasmparser::BinaryReader;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FunctionData {
@@ -12,20 +12,12 @@ pub struct FunctionData {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct FunctionPropertyDebugInfo {
-    demangled_name: Option<String>,
-    monomorphization_of: Option<String>,
-    shallow_size_bytes: String,
-    shallow_size_percent: String,
-    retained_size_bytes: String,
-    retained_size_percent: String,
-    locals: Vec<String>,
-    function_ops: Vec<String>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
 pub struct DataProviderTwiggy {
     raw_data: Vec<FunctionData>,
+
+    items_filtered: Vec<usize>,
+
+    filter: Filter,
 }
 
 impl DataProviderTwiggy {
@@ -84,6 +76,7 @@ impl DataProviderTwiggy {
                     retained_size_percent: retained_size_percent,
                 },
                 debug_info: FunctionPropertyDebugInfo {
+                    raw_name: name.to_string(),
                     demangled_name: Some(name.to_string()),
                     monomorphization_of: monomorphization_of.map(ToOwned::to_owned),
                     shallow_size_bytes: format!("{}", shallow_size_bytes),
@@ -102,7 +95,14 @@ impl DataProviderTwiggy {
                 .cmp(&b.function_property.shallow_size_bytes)
         });
 
-        Self { raw_data }
+        let mut provider = DataProviderTwiggy {
+            raw_data,
+            items_filtered: Vec::new(),
+            filter: Filter::NameFilter { name: "".into() }, // A bit hacky 2 step initialization.
+        };
+        provider.set_filter(Filter::All);
+
+        provider
     }
 }
 
@@ -183,70 +183,38 @@ impl DataProvider for DataProviderTwiggy {
     }
 }
 
-pub fn get_function_bytes(
-    wasm_data: &[u8],
-    section_idx: u32,
-    entry_idx: u32,
-) -> anyhow::Result<Vec<u8>> {
-    // let section_idx = function_id.section();
-    // let entry_idx = function_id.entry();
-
-    let mut parser = wasmparser::Parser::new(0);
-    let mut offset = 0;
-
-    // Find the code section
-    while offset < wasm_data.len() {
-        let (payload, bytes_read) =
-            match parser.parse(&wasm_data[offset..], offset == wasm_data.len()) {
-                Ok(wasmparser::Chunk::Parsed { consumed, payload }) => (payload, consumed),
-                Ok(wasmparser::Chunk::NeedMoreData { .. }) => {
-                    return Err(anyhow::anyhow!("Unexpected end of WASM binary"));
-                }
-                Err(e) => return Err(anyhow::anyhow!("Failed to parse WASM: {}", e)),
-            };
-
-        match payload {
-            wasmparser::Payload::CodeSectionStart { count, range, .. } => {
-                // Found the code section
-                let mut code_reader = wasmparser::CodeSectionReader::new(
-                    wasmparser::BinaryReader::new(&wasm_data[range.start..range.end], range.start),
-                )?;
-
-                // Skip to our target function
-                // for i in 0..entry_idx {
-                //     if i >= count {
-                //         return Err(anyhow::anyhow!("Function index out of range"));
-                //     }
-                //     code_reader.
-                // }
-
-                // // Get our target function
-                // let function = code_reader.read()?;
-
-                if let Some(section_data) = code_reader
-                    .into_iter_with_offsets()
-                    .skip(entry_idx as _)
-                    .next()
-                {
-                    let (func_size, body) = section_data?;
-                    println!("FuncSize: {:?} Body: {:?}", func_size, body);
-
-                    let mut reader = body.get_operators_reader().unwrap();
-                    while let Ok(op) = reader.read() {
-                        println!("Op: {:?}", op);
-                    }
-                }
-                return Ok(vec![]);
-            }
-            _ => {
-                println!("Payload wasn't code section!");
-            }
-        }
-
-        offset += bytes_read;
+impl FilterView for DataProviderTwiggy {
+    fn get_filtered_items_count(&self) -> usize {
+        self.items_filtered.len()
     }
 
-    Err(anyhow::anyhow!("Could not find function bytes"))
+    fn set_filter(&mut self, filter: crate::data_provider::Filter) {
+        if self.filter != filter {
+            self.items_filtered.clear();
+            for idx in 0..self.raw_data.len() {
+                match &filter {
+                    Filter::NameFilter { name } => {
+                        if self.raw_data[idx]
+                            .function_property
+                            .raw_name
+                            .to_lowercase()
+                            .contains(name)
+                        {
+                            self.items_filtered.push(idx);
+                        }
+                    }
+                    Filter::All => {
+                        self.items_filtered.push(idx);
+                    }
+                }
+            }
+        }
+    }
+
+    fn get_item_at(&self, idx: usize) -> &FunctionPropertyDebugInfo {
+        let original_idx = self.items_filtered[idx];
+        &self.raw_data[original_idx].debug_info
+    }
 }
 
 #[cfg(test)]

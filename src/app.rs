@@ -161,7 +161,7 @@ impl eframe::App for TemplateApp {
             .resizable(true)
             .show(ctx, |ui| {
                 if !self.file_entries.is_empty() {
-                    if let Some(data_provider) = &self.file_entries[0].data_provider {
+                    if let Some(data_provider) = &mut self.file_entries[0].data_provider {
                         self.functions_explorer
                             .show_functions_table(ui, data_provider);
 

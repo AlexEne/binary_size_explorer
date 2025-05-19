@@ -1,4 +1,4 @@
-use crate::data_provider::DataProvider;
+use crate::data_provider::{self, Filter, FilterView};
 
 // This thing is used to explore the functions, sort by sizes and such things.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -7,14 +7,12 @@ pub struct FunctionsExplorer {
     pub selected_row: Option<usize>,
 
     filter_text: String,
-    // filtered_count: usize,
-    total_size: u32,
-    total_percent: f32,
 }
 
 impl FunctionsExplorer {
-    pub fn show_functions_table(&mut self, ui: &mut egui::Ui, data_provider: &dyn DataProvider) {
-        let table_rows_count = data_provider.get_functions_count();
+    pub fn show_functions_table(&mut self, ui: &mut egui::Ui, filtered_view: &mut dyn FilterView) {
+        let table_rows_count = filtered_view.get_filtered_items_count();
+        dbg!(&table_rows_count);
         use egui_extras::{Size, StripBuilder};
         egui::ScrollArea::vertical().show(ui, |ui| {
             StripBuilder::new(ui)
@@ -84,69 +82,39 @@ impl FunctionsExplorer {
                                         } else {
                                             row.index()
                                         };
-                                        let mut curr_item_index = row_index;
-                                        if !self.filter_text.is_empty() {
-                                            while curr_item_index < table_rows_count {
-                                                let name =
-                                                    data_provider.str_get_name_at(curr_item_index);
-                                                if name.contains(&self.filter_text) {
-                                                    break;
-                                                }
-
-                                                curr_item_index += 1;
-                                            }
-                                        }
-
-                                        if curr_item_index >= table_rows_count {
-                                            return;
-                                        }
 
                                         if let Some(selected_row) = self.selected_row {
                                             row.set_selected(row_index == selected_row);
                                         }
 
+                                        let filtered_item = filtered_view.get_item_at(row_index);
+
                                         row.col(|ui| {
-                                            ui.label(
-                                                data_provider.str_get_retained_size_bytes_at(
-                                                    curr_item_index,
-                                                ),
-                                            );
+                                            ui.label(&filtered_item.retained_size_bytes);
+                                        });
+
+                                        row.col(|ui| {
+                                            ui.label(&filtered_item.shallow_size_bytes);
+                                        });
+
+                                        row.col(|ui| {
+                                            ui.label(&filtered_item.retained_size_percent);
+                                        });
+
+                                        row.col(|ui| {
+                                            ui.label(&filtered_item.shallow_size_percent);
+                                        });
+
+                                        row.col(|ui| {
+                                            ui.label(&filtered_item.raw_name);
                                         });
 
                                         row.col(|ui| {
                                             ui.label(
-                                                data_provider
-                                                    .str_get_shallow_size_bytes_at(curr_item_index),
-                                            );
-                                        });
-
-                                        row.col(|ui| {
-                                            ui.label(
-                                                data_provider.str_get_retained_size_percent_at(
-                                                    curr_item_index,
-                                                ),
-                                            );
-                                        });
-
-                                        row.col(|ui| {
-                                            ui.label(
-                                                data_provider.str_get_shallow_size_percent_at(
-                                                    curr_item_index,
-                                                ),
-                                            );
-                                        });
-
-                                        row.col(|ui| {
-                                            ui.label(
-                                                data_provider.str_get_name_at(curr_item_index),
-                                            );
-                                        });
-
-                                        row.col(|ui| {
-                                            ui.label(
-                                                data_provider
-                                                    .str_get_monomorphization_of_at(curr_item_index)
-                                                    .unwrap_or_default(),
+                                                filtered_item
+                                                    .monomorphization_of
+                                                    .as_ref()
+                                                    .unwrap_or(&"".to_string()),
                                             );
                                         });
 
@@ -165,15 +133,11 @@ impl FunctionsExplorer {
                             ui.horizontal(|ui| {
                                 ui.label("Filter: ");
                                 if ui.text_edit_singleline(&mut self.filter_text).changed() {
-                                    self.total_size = 0;
-                                    self.total_percent = 0.0;
-
-                                    for i in 0..data_provider.get_functions_count() {
-                                        let property = data_provider.get_property_at(i);
-                                        if property.raw_name.contains(&self.filter_text) {
-                                            self.total_size += property.shallow_size_bytes;
-                                            self.total_percent += property.shallow_size_percent;
-                                        }
+                                    if !self.filter_text.is_empty() {
+                                        filtered_view
+                                            .set_filter(Filter::name_filter(&self.filter_text));
+                                    } else {
+                                        filtered_view.set_filter(Filter::All);
                                     }
                                 }
                             });
@@ -182,8 +146,8 @@ impl FunctionsExplorer {
 
                             ui.label("Stats");
                             ui.label(format!(
-                                "Filtered size: {:#?} Bytes ({:.4})",
-                                self.total_size, self.total_percent
+                                "Total count: {}",
+                                filtered_view.get_filtered_items_count()
                             ));
                         });
                     });
