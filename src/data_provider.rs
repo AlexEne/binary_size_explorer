@@ -1,5 +1,3 @@
-use std::default;
-
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct FunctionProperty {
     pub raw_name: String,

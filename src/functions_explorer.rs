@@ -12,7 +12,6 @@ pub struct FunctionsExplorer {
 impl FunctionsExplorer {
     pub fn show_functions_table(&mut self, ui: &mut egui::Ui, filtered_view: &mut dyn FilterView) {
         let table_rows_count = filtered_view.get_filtered_items_count();
-        dbg!(&table_rows_count);
         use egui_extras::{Size, StripBuilder};
         egui::ScrollArea::vertical().show(ui, |ui| {
             StripBuilder::new(ui)
