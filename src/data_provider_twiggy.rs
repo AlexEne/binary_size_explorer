@@ -5,13 +5,11 @@ use std::{ops::Range, path};
 use twiggy_opt::CommonCliOptions;
 use wasmparser::BinaryReader;
 
-#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FunctionData {
     pub function_property: FunctionProperty,
     pub debug_info: FunctionPropertyDebugInfo,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
 pub struct DataProviderTwiggy {
     raw_data: Vec<FunctionData>,
 
@@ -63,8 +61,6 @@ impl DataProviderTwiggy {
 
             let retained_size_bytes = items.retained_size(item.id());
             let retained_size_percent = (retained_size_bytes as f32 / total_size as f32) * 100.0;
-
-            let id_num = item.id().serializable();
 
             let range = item.bytes_range().clone();
             let mut locals = Vec::new();
@@ -244,12 +240,12 @@ impl FilterView for DataProviderTwiggy {
     fn get_total_percent(&self) -> f32 {
         self.total_percent
     }
-    
+
     fn get_locals_at(&self, idx: usize) -> &[String] {
         let original_idx = self.items_filtered[idx];
         &self.raw_data[original_idx].debug_info.locals
     }
-    
+
     fn get_ops_at(&self, idx: usize) -> &[String] {
         let original_idx = self.items_filtered[idx];
         &self.raw_data[original_idx].debug_info.function_ops

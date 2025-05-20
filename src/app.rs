@@ -1,13 +1,19 @@
 use crate::code_viewer::show_code;
-use crate::data_provider::{DataProvider, FilterView};
+use crate::data_provider::FilterView;
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
+use serde::ser::SerializeStruct;
 use std::path::PathBuf;
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
+pub enum FileType {
+    Wasm,
+}
+
 pub struct FileEntry {
     pub path: PathBuf,
+    pub ty: FileType,
     pub data_provider: Option<DataProviderTwiggy>,
 }
 
@@ -52,13 +58,9 @@ enum TabContent {
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    #[serde(skip)]
     file_dialog: FileDialog,
 
-    #[serde(skip)]
     last_path_picked: PathBuf,
 
     analyzer_state: Option<AnalyzerState>,
@@ -70,12 +72,8 @@ pub struct TemplateApp {
     tree: egui_dock::DockState<DockTab>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
 enum AnalyzerState {
-    AnalyzeWasm {
-        path: PathBuf,
-        wasm_file_data: Box<[u8]>,
-    },
+    AnalyzeWasm { path: PathBuf },
 }
 
 impl Default for TemplateApp {
@@ -139,10 +137,8 @@ impl eframe::App for TemplateApp {
                 self.file_dialog.update(ctx);
                 if let Some(path) = self.file_dialog.picked() {
                     if path != self.last_path_picked {
-                        let file_data = std::fs::read(path).unwrap();
                         self.analyzer_state = Some(AnalyzerState::AnalyzeWasm {
                             path: path.to_path_buf(),
-                            wasm_file_data: file_data.into_boxed_slice(),
                         });
                         self.last_path_picked = path.into();
                         self.functions_explorer = FunctionsExplorer::default();
@@ -224,6 +220,7 @@ impl TemplateApp {
 
                     self.file_entries.push(FileEntry {
                         path,
+                        ty: FileType::Wasm,
                         data_provider,
                     });
 
@@ -233,5 +230,112 @@ impl TemplateApp {
         }
 
         self.analyzer_state = next_state;
+    }
+}
+
+const SERIALIZABLE_FIELDS: &[&str] = &[
+    "last_path_picked",
+    "functions_explorer",
+    "file_entries",
+    "tree",
+];
+
+impl serde::Serialize for TemplateApp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut s = serializer.serialize_struct("TemplateApp", SERIALIZABLE_FIELDS.len())?;
+        s.serialize_field("tree", &self.tree)?;
+        s.serialize_field("last_path_picked", &self.last_path_picked)?;
+        s.serialize_field("functions_explorer", &self.functions_explorer)?;
+
+        let mut files: Vec<(PathBuf, FileType)> = Vec::with_capacity(self.file_entries.len());
+        for file_entry in &self.file_entries {
+            files.push((file_entry.path.clone(), file_entry.ty));
+        }
+        s.serialize_field("file_entries", &files)?;
+        s.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TemplateApp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct TemplateAppVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for TemplateAppVisitor {
+            type Value = TemplateApp;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("struct TemplateApp")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut tree = None;
+                let mut last_path_picked: Option<PathBuf> = None;
+                let mut functions_explorer = None;
+                let mut file_entries = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        "tree" => {
+                            tree = Some(map.next_value()?);
+                        }
+                        "last_path_picked" => {
+                            last_path_picked = Some(map.next_value()?);
+                        }
+                        "functions_explorer" => {
+                            functions_explorer = Some(map.next_value()?);
+                        }
+                        "file_entries" => {
+                            let files: Vec<(PathBuf, FileType)> = map.next_value()?;
+
+                            let mut fe = Vec::with_capacity(files.len());
+                            for (path, ty) in files {
+                                let data_provider = match ty {
+                                    FileType::Wasm => Some(DataProviderTwiggy::from_path(&path)),
+                                };
+
+                                fe.push(FileEntry {
+                                    path,
+                                    ty,
+                                    data_provider,
+                                });
+                            }
+
+                            file_entries = Some(fe);
+                        }
+                        _ => {
+                            return Err(serde::de::Error::unknown_field(key, SERIALIZABLE_FIELDS));
+                        }
+                    }
+                }
+
+                let tree = tree.ok_or_else(|| serde::de::Error::missing_field("tree"))?;
+                let last_path_picked = last_path_picked
+                    .ok_or_else(|| serde::de::Error::missing_field("last_path_picked"))?;
+                let functions_explorer = functions_explorer
+                    .ok_or_else(|| serde::de::Error::missing_field("functions_explorer"))?;
+                let file_entries = file_entries
+                    .ok_or_else(|| serde::de::Error::missing_field("functions_explorer"))?;
+
+                Ok(TemplateApp {
+                    file_dialog: FileDialog::default().initial_directory(last_path_picked.clone()),
+                    last_path_picked,
+                    analyzer_state: None,
+                    functions_explorer,
+                    file_entries,
+                    tree,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("TemplateApp", SERIALIZABLE_FIELDS, TemplateAppVisitor)
     }
 }
