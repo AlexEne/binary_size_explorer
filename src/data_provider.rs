@@ -1,4 +1,3 @@
-#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FunctionProperty {
     pub raw_name: String,
     pub shallow_size_bytes: u32,
@@ -7,7 +6,6 @@ pub struct FunctionProperty {
     pub retained_size_percent: f32,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct FunctionPropertyDebugInfo {
     pub raw_name: String,
     pub demangled_name: Option<String>,

@@ -1,4 +1,4 @@
-use crate::data_provider::{self, Filter, FilterView};
+use crate::data_provider::{Filter, FilterView};
 
 // This thing is used to explore the functions, sort by sizes and such things.
 #[derive(serde::Serialize, serde::Deserialize, Default)]
