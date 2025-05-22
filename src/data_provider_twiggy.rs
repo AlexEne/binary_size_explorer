@@ -1,6 +1,8 @@
 use crate::data_provider::{
-    DataProvider, Filter, FilterView, FunctionProperty, FunctionPropertyDebugInfo,
+    DominatorsView, Filter, FunctionProperty, FunctionPropertyDebugInfo, FunctionsView, TopsView,
+    ViewMode,
 };
+use egui::ahash::{HashMap, HashMapExt};
 use std::{ops::Range, path};
 use twiggy_opt::CommonCliOptions;
 use wasmparser::BinaryReader;
@@ -8,11 +10,16 @@ use wasmparser::BinaryReader;
 pub struct FunctionData {
     pub function_property: FunctionProperty,
     pub debug_info: FunctionPropertyDebugInfo,
+    pub open: bool,
+    pub visible: bool,
+    pub children: Vec<usize>,
 }
 
 pub struct DataProviderTwiggy {
+    view_mode: ViewMode,
     raw_data: Vec<FunctionData>,
 
+    roots: Vec<usize>,
     items_filtered: Vec<usize>,
     total_size: u32,
     total_percent: f32,
@@ -25,6 +32,7 @@ impl DataProviderTwiggy {
         let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
 
         let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
+        let mut id_to_idx = HashMap::new();
 
         items.compute_retained_sizes();
 
@@ -81,42 +89,87 @@ impl DataProviderTwiggy {
                 twiggy_ir::ItemKind::Misc(_misc) => (),
             }
 
+            id_to_idx.insert(item.id(), raw_data.len());
+
             raw_data.push(FunctionData {
                 function_property: FunctionProperty {
                     raw_name: name.to_string(),
-                    shallow_size_bytes: shallow_size_bytes,
-                    shallow_size_percent: shallow_size_percent,
-                    retained_size_bytes,
-                    retained_size_percent: retained_size_percent,
-                },
-                debug_info: FunctionPropertyDebugInfo {
-                    raw_name: name.to_string(),
                     demangled_name: Some(name.to_string()),
                     monomorphization_of: monomorphization_of.map(ToOwned::to_owned),
-                    shallow_size_bytes: format!("{}", shallow_size_bytes),
-                    shallow_size_percent: format!("{:.2}%", shallow_size_percent),
-                    retained_size_bytes: format!("{}", retained_size_bytes),
-                    retained_size_percent: format!("{:.2}%", retained_size_percent),
+                    shallow_size_bytes,
+                    shallow_size_percent,
+                    retained_size_bytes,
+                    retained_size_percent,
+                },
+                debug_info: FunctionPropertyDebugInfo {
                     locals,
                     function_ops,
                 },
+                open: false,
+                visible: true,
+                children: Vec::with_capacity(
+                    items
+                        .dominator_tree()
+                        .get(&item.id())
+                        .map(|children| children.len())
+                        .unwrap_or(4),
+                ),
             });
         }
 
-        raw_data.sort_by(|a, b| {
-            a.function_property
-                .shallow_size_bytes
-                .cmp(&b.function_property.shallow_size_bytes)
+        let dominator_tree = items.dominator_tree();
+        for item in items.iter() {
+            let Some(index) = id_to_idx.get(&item.id()).copied() else {
+                continue;
+            };
+
+            if let Some(children_ids) = dominator_tree.get(&item.id()) {
+                let mut children = Vec::with_capacity(raw_data[index].children.len());
+                for child_id in children_ids {
+                    if let Some(child_index) = id_to_idx.get(child_id).copied() {
+                        children.push(child_index);
+                    }
+                }
+
+                children.sort_by(|a, b| {
+                    raw_data[*b]
+                        .function_property
+                        .retained_size_bytes
+                        .cmp(&raw_data[*a].function_property.retained_size_bytes)
+                });
+
+                raw_data[index].children = children;
+            }
+        }
+
+        let mut roots = Vec::new();
+        if let Some(root_ids) = items.dominator_tree().get(&items.meta_root()) {
+            for root_id in root_ids {
+                if let Some(idx) = id_to_idx.get(root_id).copied() {
+                    roots.push(idx);
+                }
+            }
+        }
+
+        roots.sort_by(|a, b| {
+            raw_data[*b]
+                .function_property
+                .retained_size_bytes
+                .cmp(&raw_data[*a].function_property.retained_size_bytes)
         });
 
+        let items_filtered: Vec<usize> = Vec::with_capacity(raw_data.len());
+
         let mut provider = DataProviderTwiggy {
+            view_mode: ViewMode::Tops,
             raw_data,
             total_size: 0,
             total_percent: 0.0,
-            items_filtered: Vec::new(),
-            filter: Filter::NameFilter { name: "".into() }, // A bit hacky 2 step initialization.
+            roots,
+            items_filtered,
+            filter: Filter::All,
         };
-        provider.set_filter(Filter::All);
+        provider.recompute_index_map();
 
         provider
     }
@@ -130,16 +183,6 @@ fn get_locals_and_ops_for_function(
     let mut ops = Vec::new();
     let function_body =
         wasmparser::FunctionBody::new(BinaryReader::new(&data[range.start..range.end], 0));
-
-    // for i in range.start..range.end {
-    //     print!("{:02?} ", i);
-    // }
-    // println!();
-
-    // for i in range.start..range.end {
-    //     print!("{:02?} ", data[i]);
-    // }
-    // println!();
 
     if let Ok(mut locals_reader) = function_body.get_locals_reader() {
         let mut local_index = 0;
@@ -160,77 +203,138 @@ fn get_locals_and_ops_for_function(
     (locals, ops)
 }
 
-impl DataProvider for DataProviderTwiggy {
-    fn get_property_at(&self, idx: usize) -> &FunctionProperty {
-        &self.raw_data[idx].function_property
-    }
-
-    fn get_functions_count(&self) -> usize {
-        self.raw_data.len()
-    }
-
-    fn str_get_name_at(&self, idx: usize) -> &str {
-        &self.raw_data[idx].function_property.raw_name
-    }
-
-    fn str_get_monomorphization_of_at(&self, idx: usize) -> Option<&str> {
-        self.raw_data[idx].debug_info.monomorphization_of.as_deref()
-    }
-
-    fn str_get_shallow_size_bytes_at(&self, idx: usize) -> &str {
-        &self.raw_data[idx].debug_info.shallow_size_bytes
-    }
-
-    fn str_get_shallow_size_percent_at(&self, idx: usize) -> &str {
-        &self.raw_data[idx].debug_info.shallow_size_percent
-    }
-
-    fn str_get_retained_size_bytes_at(&self, idx: usize) -> &str {
-        &self.raw_data[idx].debug_info.retained_size_bytes
-    }
-    fn str_get_retained_size_percent_at(&self, idx: usize) -> &str {
-        &self.raw_data[idx].debug_info.retained_size_percent
-    }
-}
-
-impl FilterView for DataProviderTwiggy {
-    fn get_filtered_items_count(&self) -> usize {
-        self.items_filtered.len()
-    }
-
-    fn set_filter(&mut self, filter: crate::data_provider::Filter) {
-        if self.filter != filter {
-            self.items_filtered.clear();
-            self.total_size = 0;
-            self.total_percent = 0.0;
-            for idx in 0..self.raw_data.len() {
-                let item = &self.raw_data[idx].function_property;
-                let added = match &filter {
-                    Filter::NameFilter { name } => {
-                        if item.raw_name.to_lowercase().contains(name) {
+impl DataProviderTwiggy {
+    /// This functions recomputes the index map used to return
+    /// the correct item/size information to the active view.
+    ///
+    /// Whenever the view mode or filter changes, this function
+    /// should be called to update the internal state shared
+    /// between tops and dominators view modes.
+    fn recompute_index_map(&mut self) {
+        match self.view_mode {
+            ViewMode::Tops => {
+                self.items_filtered.clear();
+                self.total_size = 0;
+                self.total_percent = 0.0;
+                for idx in 0..self.raw_data.len() {
+                    let item = &self.raw_data[idx].function_property;
+                    let added = match &self.filter {
+                        Filter::NameFilter { name } => {
+                            if item.raw_name.to_lowercase().contains(name) {
+                                self.items_filtered.push(idx);
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        Filter::All => {
                             self.items_filtered.push(idx);
                             true
-                        } else {
-                            false
+                        }
+                    };
+
+                    if added {
+                        self.total_size += item.shallow_size_bytes;
+                        self.total_percent += item.shallow_size_percent;
+                    }
+                }
+
+                let Self {
+                    raw_data,
+                    items_filtered,
+                    ..
+                } = self;
+
+                items_filtered.sort_by(|a, b| {
+                    raw_data[*a]
+                        .function_property
+                        .retained_size_bytes
+                        .cmp(&raw_data[*b].function_property.retained_size_bytes)
+                });
+            }
+            ViewMode::Dominators => {
+                fn should_be_visible(
+                    raw_data: &mut Vec<FunctionData>,
+                    total_size: &mut u32,
+                    total_percent: &mut f32,
+                    idx: usize,
+                    parent_visible: bool,
+                    filter: &str,
+                ) -> bool {
+                    let item = &raw_data[idx];
+
+                    let name = item.function_property.demangled_name.clone().unwrap();
+                    let visible = name.to_lowercase().contains(filter);
+
+                    if visible && !parent_visible {
+                        *total_size += item.function_property.retained_size_bytes;
+                        *total_percent += item.function_property.retained_size_percent;
+                    }
+
+                    let children = item.children.clone();
+                    let mut child_visible = false;
+                    for child in children {
+                        if should_be_visible(
+                            raw_data,
+                            total_size,
+                            total_percent,
+                            child,
+                            parent_visible | visible,
+                            filter,
+                        ) {
+                            child_visible = true;
                         }
                     }
-                    Filter::All => {
-                        self.items_filtered.push(idx);
-                        true
+
+                    if child_visible {
+                        raw_data[idx].open = true;
                     }
+
+                    raw_data[idx].visible = parent_visible | visible | child_visible;
+
+                    raw_data[idx].visible
+                }
+
+                let filter = match &self.filter {
+                    Filter::All => "",
+                    Filter::NameFilter { name } => name,
                 };
 
-                if added {
-                    self.total_size += item.shallow_size_bytes;
-                    self.total_percent += item.shallow_size_percent;
+                self.total_size = 0;
+                self.total_percent = 0.0;
+
+                for &root in &self.roots {
+                    should_be_visible(
+                        &mut self.raw_data,
+                        &mut self.total_size,
+                        &mut self.total_percent,
+                        root,
+                        false,
+                        filter,
+                    );
                 }
             }
         }
     }
+}
 
-    fn get_item_at(&self, idx: usize) -> &FunctionPropertyDebugInfo {
-        let original_idx = self.items_filtered[idx];
-        &self.raw_data[original_idx].debug_info
+impl FunctionsView for DataProviderTwiggy {
+    fn set_view_mode(&mut self, view_mode: ViewMode) {
+        if self.view_mode == view_mode {
+            return;
+        }
+
+        self.view_mode = view_mode;
+        self.recompute_index_map();
+    }
+
+    fn set_filter(&mut self, filter: Filter) {
+        if self.filter == filter {
+            return;
+        }
+
+        self.filter = filter;
+        self.recompute_index_map();
     }
 
     fn get_total_size(&self) -> u32 {
@@ -239,6 +343,17 @@ impl FilterView for DataProviderTwiggy {
 
     fn get_total_percent(&self) -> f32 {
         self.total_percent
+    }
+}
+
+impl TopsView for DataProviderTwiggy {
+    fn get_tops_items_count(&self) -> usize {
+        self.items_filtered.len()
+    }
+
+    fn get_tops_item_at(&self, idx: usize) -> &FunctionProperty {
+        let original_idx = self.items_filtered[idx];
+        &self.raw_data[original_idx].function_property
     }
 
     fn get_locals_at(&self, idx: usize) -> &[String] {
@@ -249,6 +364,70 @@ impl FilterView for DataProviderTwiggy {
     fn get_ops_at(&self, idx: usize) -> &[String] {
         let original_idx = self.items_filtered[idx];
         &self.raw_data[original_idx].debug_info.function_ops
+    }
+}
+
+impl DominatorsView for DataProviderTwiggy {
+    fn get_roots(&self) -> &Vec<usize> {
+        &self.roots
+        // if let Filter::NameFilter { name } = &self.filter {
+        //     let mut roots: Vec<usize> = Vec::with_capacity(self.roots.len());
+        //     for &root in &self.roots {
+        //         if !self.raw_data[root]
+        //             .function_property
+        //             .raw_name
+        //             .to_lowercase()
+        //             .contains(name)
+        //         {
+        //             continue;
+        //         }
+
+        //         roots.push(root);
+        //     }
+
+        //     return roots;
+        // } else {
+        //     self.roots.clone()
+        // }
+    }
+
+    fn get_dominator_item_at(&self, idx: usize) -> &FunctionProperty {
+        &self.raw_data[idx].function_property
+    }
+
+    fn get_children_of(&self, idx: usize) -> &Vec<usize> {
+        &self.raw_data[idx].children
+        // if let Filter::NameFilter { name } = &self.filter {
+        //     let mut children: Vec<usize> = Vec::with_capacity(self.roots.len());
+        //     for &child in &self.raw_data[idx].children {
+        //         if !self.raw_data[child]
+        //             .function_property
+        //             .raw_name
+        //             .to_lowercase()
+        //             .contains(name)
+        //         {
+        //             continue;
+        //         }
+
+        //         children.push(child);
+        //     }
+
+        //     return children;
+        // } else {
+        //     self.raw_data[idx].children.clone()
+        // }
+    }
+
+    fn is_child_visible(&self, idx: usize) -> bool {
+        self.raw_data[idx].visible
+    }
+
+    fn is_child_open(&self, idx: usize) -> bool {
+        self.raw_data[idx].open
+    }
+
+    fn set_child_open(&mut self, idx: usize, open: bool) {
+        self.raw_data[idx].open = open;
     }
 }
 
