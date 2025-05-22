@@ -10,7 +10,21 @@ pub struct FunctionProperty {
 
 pub struct FunctionPropertyDebugInfo {
     pub locals: Vec<String>,
-    pub function_ops: Vec<String>,
+    pub function_ops: Vec<FunctionOp>,
+}
+
+pub struct FunctionOp {
+    pub address: u64,
+    pub op: String,
+}
+
+impl FunctionOp {
+    pub fn new(addr: u64, decoded_asm: String) -> FunctionOp {
+        FunctionOp {
+            address: addr,
+            op: decoded_asm,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -49,7 +63,8 @@ pub trait TopsView {
     fn get_tops_item_at(&self, idx: usize) -> &FunctionProperty;
 
     fn get_locals_at(&self, idx: usize) -> &[String];
-    fn get_ops_at(&self, idx: usize) -> &[String];
+    fn get_ops_at(&self, idx: usize) -> &[FunctionOp];
+    fn get_start_addr(&self, idx: usize) -> u64;
 }
 
 pub trait DominatorsView {
@@ -59,4 +74,15 @@ pub trait DominatorsView {
     fn is_child_visible(&self, idx: usize) -> bool;
     fn set_child_open(&mut self, idx: usize, open: bool);
     fn is_child_open(&self, idx: usize) -> bool;
+}
+
+#[derive(Debug)]
+pub struct DwarfLocationData {
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+}
+
+pub trait SourceCodeView {
+    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<DwarfLocationData>;
 }

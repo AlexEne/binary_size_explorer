@@ -1,9 +1,10 @@
 use crate::code_viewer::show_code;
-use crate::data_provider::TopsView;
+use crate::data_provider::{SourceCodeView, TopsView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
+use std::fs;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
@@ -28,8 +29,12 @@ impl egui_dock::TabViewer for TabViewer {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match &tab.contents {
-            TabContent::SourceCodeViewer { code } => {
+            TabContent::SourceCodeViewer { code, .. } => {
                 show_code(ui, code, "rs");
+            }
+
+            TabContent::AssemblyViewer { asm } => {
+                show_code(ui, asm, "rs");
             }
         }
     }
@@ -42,11 +47,9 @@ struct DockTab {
 }
 
 impl DockTab {
-    fn new(title: impl Into<String>, code_string: &str) -> DockTab {
+    fn new(title: impl Into<String>, contents: TabContent) -> DockTab {
         DockTab {
-            contents: TabContent::SourceCodeViewer {
-                code: code_string.into(),
-            },
+            contents,
             title: title.into(),
         }
     }
@@ -54,7 +57,8 @@ impl DockTab {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 enum TabContent {
-    SourceCodeViewer { code: String },
+    SourceCodeViewer { file_path: String, code: String },
+    AssemblyViewer { asm: String },
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -89,8 +93,14 @@ impl Default for TemplateApp {
             file_entries: Vec::new(),
 
             tree: egui_dock::DockState::new(vec![
-                DockTab::new("First", ""),
-                DockTab::new("Second", ""),
+                DockTab::new("WASM", TabContent::AssemblyViewer { asm: "".into() }),
+                DockTab::new(
+                    "Second",
+                    TabContent::SourceCodeViewer {
+                        code: "".into(),
+                        file_path: "".into(),
+                    },
+                ),
             ]),
         }
     }
@@ -162,18 +172,64 @@ impl eframe::App for TemplateApp {
                             .show_functions_table(ui, data_provider);
 
                         if let Some(idx) = self.functions_explorer.selected_row {
-                            let code_string: String =
+                            let (asm_string, first_address): (String, u64) =
                                 if let Some(data_provider) = &self.file_entries[0].data_provider {
-                                    data_provider.get_locals_at(idx).join("\n")
-                                        + "\n"
-                                        + &data_provider.get_ops_at(idx).join("\n")
+                                    (
+                                        data_provider.get_locals_at(idx).join("\n")
+                                            + "\n"
+                                            + &data_provider
+                                                .get_ops_at(idx)
+                                                .iter()
+                                                .map(|func_op| {
+                                                    format!(
+                                                        "{:06x} {}",
+                                                        func_op.address,
+                                                        func_op.op.clone()
+                                                    )
+                                                })
+                                                .collect::<Vec<String>>()
+                                                .join("\n"),
+                                        data_provider.get_start_addr(idx),
+                                    )
                                 } else {
-                                    String::new()
+                                    (String::new(), 0)
                                 };
                             self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
-                                tab.contents = TabContent::SourceCodeViewer {
-                                    code: code_string.clone(),
-                                };
+                                match &mut tab.contents {
+                                    TabContent::SourceCodeViewer { code, file_path } => {
+                                        if let Some(data_provider) =
+                                            self.file_entries[0].data_provider.as_ref()
+                                        {
+                                            if let Some(location) =
+                                                data_provider.get_location_for_addr(first_address)
+                                            {
+                                                if let Some(file) = location.file.as_ref() {
+                                                    if file != file_path {
+                                                        *file_path = file.clone();
+                                                        if let Ok(source_code) =
+                                                            fs::read_to_string(file_path)
+                                                        {
+                                                            *code = source_code
+                                                        } else {
+                                                            *code = format!(
+                                                                "Couldn't find file for: {:?}",
+                                                                location
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            } else {
+                                                *code = format!(
+                                                    "Location not found for {:06x}",
+                                                    first_address
+                                                );
+                                            }
+                                        } else {
+                                            *code = "Invalid data provider".into()
+                                        }
+                                    }
+                                    TabContent::AssemblyViewer { asm } => *asm = asm_string.clone(),
+                                }
                             });
                         }
                     }
@@ -223,6 +279,18 @@ impl TemplateApp {
                         ty: FileType::Wasm,
                         data_provider,
                     });
+
+                    // Reset the tree.
+                    self.tree = egui_dock::DockState::new(vec![
+                        DockTab::new("WASM", TabContent::AssemblyViewer { asm: "".into() }),
+                        DockTab::new(
+                            "Source Code",
+                            TabContent::SourceCodeViewer {
+                                code: "".into(),
+                                file_path: "".into(),
+                            },
+                        ),
+                    ]);
 
                     next_state = None;
                 }
