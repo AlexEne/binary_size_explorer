@@ -25,6 +25,11 @@ twiggy-ir = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissa
 anyhow = "1.0.98"
 # twiggy-ir = "0.7.0"
 wasmparser = "0.230.0"
+wasm-tools = { version = "1.230.0", features = [
+    "addr2line",
+], default-features = false }
+addr2line = "0.24.2"
+
 
 [profile.release]
 opt-level = 2

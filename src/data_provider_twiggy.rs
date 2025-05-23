@@ -1,10 +1,12 @@
 use crate::data_provider::{
-    DominatorsView, Filter, FunctionProperty, FunctionPropertyDebugInfo, FunctionsView, TopsView,
-    ViewMode,
+    DominatorsView, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
+    FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, TopsView, ViewMode,
 };
+use addr2line::LookupResult;
 use egui::ahash::{HashMap, HashMapExt};
 use std::{ops::Range, path};
 use twiggy_opt::CommonCliOptions;
+use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::BinaryReader;
 
 pub struct FunctionData {
@@ -25,6 +27,8 @@ pub struct DataProviderTwiggy {
     total_percent: f32,
 
     filter: Filter,
+
+    wasm_data_bytes: Vec<u8>,
 }
 
 impl DataProviderTwiggy {
@@ -168,6 +172,7 @@ impl DataProviderTwiggy {
             roots,
             items_filtered,
             filter: Filter::All,
+            wasm_data_bytes: wasm_data,
         };
         provider.recompute_index_map();
 
@@ -175,10 +180,10 @@ impl DataProviderTwiggy {
     }
 }
 
-fn get_locals_and_ops_for_function(
-    data: &[u8],
-    range: &Range<usize>,
-) -> (Vec<String>, Vec<String>) {
+fn get_locals_and_ops_for_function<'a>(
+    data: &'a [u8],
+    range: &'a Range<usize>,
+) -> (Vec<String>, Vec<FunctionOp>) {
     let mut locals = Vec::new();
     let mut ops = Vec::new();
     let function_body =
@@ -197,7 +202,9 @@ fn get_locals_and_ops_for_function(
 
     let mut body = function_body.get_operators_reader().unwrap();
     while let Ok((op, offset)) = body.read_with_offset() {
-        ops.push(format!("{:#06x}: {:?}", offset + range.start, op));
+        // let addr = 0x000273 + offset;
+        let addr = range.start + offset;
+        ops.push(FunctionOp::new(addr as u64, format!("{:?}", op)));
     }
 
     (locals, ops)
@@ -361,9 +368,18 @@ impl TopsView for DataProviderTwiggy {
         &self.raw_data[original_idx].debug_info.locals
     }
 
-    fn get_ops_at(&self, idx: usize) -> &[String] {
+    fn get_ops_at(&self, idx: usize) -> &[FunctionOp] {
         let original_idx = self.items_filtered[idx];
         &self.raw_data[original_idx].debug_info.function_ops
+    }
+
+    fn get_start_addr(&self, idx: usize) -> u64 {
+        let original_idx = self.items_filtered[idx];
+        let Some(first_op) = self.raw_data[original_idx].debug_info.function_ops.first() else {
+            return 0;
+        };
+
+        first_op.address
     }
 }
 
@@ -431,9 +447,42 @@ impl DominatorsView for DataProviderTwiggy {
     }
 }
 
+impl SourceCodeView for DataProviderTwiggy {
+    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<DwarfLocationData> {
+        //TODO(alex): Remove this parse on each location find.
+        let Some(mut modules) = Addr2lineModules::parse(&self.wasm_data_bytes).ok() else {
+            return None;
+        };
+
+        find_frames(virtual_addr, &mut modules)
+    }
+}
+
+fn find_frames(addr: u64, modules: &mut Addr2lineModules<'_>) -> Option<DwarfLocationData> {
+    let (context, text_rel_addr) = modules.context(addr, false).ok()??;
+    let mut frames = match context.find_frames(text_rel_addr) {
+        LookupResult::Output(result) => result.ok()?,
+        LookupResult::Load { .. } => panic!("Split dwarf not supported"),
+    };
+
+    while let Ok(Some(frame)) = frames.next() {
+        if let Some(location) = frame.location.as_ref() {
+            return Some(DwarfLocationData {
+                file: location.file.map(|f| f.to_string()),
+                line: location.line,
+                column: location.column,
+            });
+        }
+    }
+
+    return None;
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::fs;
+    use wasm_tools::addr2line::Addr2lineModules;
 
     #[test]
     fn test_a_simple_wasm_function_that_returns_42() {
@@ -445,7 +494,48 @@ mod test {
         let ref_ops = ["I32Const { value: 42 }", "Return", "End"];
 
         for idx in 0..3 {
-            assert_eq!(ops[idx], ref_ops[idx]);
+            assert_eq!(ops[idx].op, ref_ops[idx]);
+        }
+    }
+
+    #[test]
+    fn debug_loader_things() {
+        // let loader = Loader::new("wasm_test_with_debug.wasm").unwrap();
+        // let loc = loader.find_location(0x19e6).unwrap().unwrap();
+
+        let addr_and_expectations = [
+            (
+                0x000213,
+                DwarfLocationData {
+                    file: Some(
+                        "/Users/alexene/Desktop/ws/simple_wasm_test_with_dwarf/src/lib.rs".into(),
+                    ),
+                    line: Some(2),
+                    column: Some(0),
+                },
+            ),
+            (
+                0x000315,
+                DwarfLocationData {
+                    file: Some(
+                        "/rustc/05f9846f893b09a1be1fc8560e33fc3c815cfecb/library/core/src/fmt/mod.rs".into(),
+                    ),
+                    line: Some(2652),
+                    column: Some(71),
+                },
+            ),
+            ];
+
+        let wasm_file_data = fs::read("simple_wasm_test_with_dwarf.wasm").unwrap();
+        let mut modules = Addr2lineModules::parse(&wasm_file_data).unwrap();
+
+        // Rev iter since I want to make sure there's no requirement on order of addresses.
+        // Not sure why modules is &mut tho :(
+        for (addr, expectation) in addr_and_expectations.iter().rev() {
+            let dwarf_loc = find_frames(*addr, &mut modules).unwrap();
+            assert_eq!(dwarf_loc.file, expectation.file);
+            assert_eq!(dwarf_loc.line, expectation.line);
+            assert_eq!(dwarf_loc.column, expectation.column);
         }
     }
 }
