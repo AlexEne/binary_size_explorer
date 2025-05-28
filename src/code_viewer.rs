@@ -17,8 +17,19 @@ pub fn show_code(ui: &mut egui::Ui, code: &[String], language: &str, highlight_l
         let highlighted_line =
             remove_leading_indentation(code[highlight_line].trim_start_matches('\n'));
         let highlighted_line: egui::RichText = highlighted_line.into();
-        ui.code(highlighted_line.code().strong().underline())
-            .highlight();
+
+        let prev_color = ui.style_mut().visuals.code_bg_color;
+        ui.style_mut().visuals.code_bg_color = egui::Color32::LIGHT_RED;
+
+        ui.code(
+            highlighted_line
+                .code()
+                .underline()
+                .color(egui::Color32::BLACK),
+        );
+
+        // Restore prev color
+        ui.style_mut().visuals.code_bg_color = prev_color;
     }
 
     for idx in (highlight_line + 1)..code.len() {
