@@ -3,9 +3,28 @@ pub(crate) fn code_view_ui(ui: &mut egui::Ui, code: &str, language: &str) {
     egui_extras::syntax_highlighting::code_view_ui(ui, &theme, code, language);
 }
 
-pub fn show_code(ui: &mut egui::Ui, code: &str, language: &str) {
-    let code = remove_leading_indentation(code.trim_start_matches('\n'));
-    code_view_ui(ui, &code, language);
+pub fn show_code(ui: &mut egui::Ui, code: &[String], language: &str, highlight_line: u32) {
+    let highlight_line = highlight_line as usize;
+    if highlight_line >= code.len() {
+        return;
+    }
+    for idx in 0..highlight_line {
+        let code = remove_leading_indentation(code[idx].trim_start_matches('\n'));
+        code_view_ui(ui, &code, language);
+    }
+
+    {
+        let highlighted_line =
+            remove_leading_indentation(code[highlight_line].trim_start_matches('\n'));
+        let highlighted_line: egui::RichText = highlighted_line.into();
+        ui.code(highlighted_line.code().strong().underline())
+            .highlight();
+    }
+
+    for idx in (highlight_line + 1)..code.len() {
+        let code = remove_leading_indentation(code[idx].trim_start_matches('\n'));
+        code_view_ui(ui, &code, language);
+    }
 }
 
 fn remove_leading_indentation(code: &str) -> String {

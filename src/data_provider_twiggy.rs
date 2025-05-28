@@ -449,7 +449,6 @@ impl DominatorsView for DataProviderTwiggy {
 
 impl SourceCodeView for DataProviderTwiggy {
     fn get_location_for_addr(&self, virtual_addr: u64) -> Option<DwarfLocationData> {
-        //TODO(alex): Remove this parse on each location find.
         let Some(mut modules) = Addr2lineModules::parse(&self.wasm_data_bytes).ok() else {
             return None;
         };
