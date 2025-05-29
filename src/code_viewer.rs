@@ -68,7 +68,7 @@ impl CodeViewer {
             ui.style_mut().interaction.selectable_labels = false;
 
             let available_height = ui.available_height();
-            let mut table = egui_extras::TableBuilder::new(ui)
+            let table = egui_extras::TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))

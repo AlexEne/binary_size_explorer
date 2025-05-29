@@ -34,7 +34,7 @@ impl egui_dock::TabViewer for TabViewer {
             }
 
             TabContent::AssemblyViewer { asm } => {
-                // show_code(ui, asm, "cpp", 0);
+                asm.show_code_as_table(ui);
             }
         }
     }
@@ -63,7 +63,7 @@ enum TabContent {
         first_address: u64,
     },
     AssemblyViewer {
-        asm: Vec<String>,
+        asm: CodeViewer,
     },
 }
 
@@ -106,7 +106,12 @@ impl Default for TemplateApp {
             file_entries: Vec::new(),
 
             tree: egui_dock::DockState::new(vec![
-                DockTab::new("WASM", TabContent::AssemblyViewer { asm: Vec::new() }),
+                DockTab::new(
+                    "WASM",
+                    TabContent::AssemblyViewer {
+                        asm: CodeViewer::for_language("wasm"),
+                    },
+                ),
                 DockTab::new(
                     "Source",
                     TabContent::SourceCodeViewer {
@@ -279,10 +284,9 @@ impl eframe::App for TemplateApp {
                                         }
                                     }
                                     TabContent::AssemblyViewer { asm } => {
-                                        *asm = asm_string
-                                            .lines()
-                                            .map(|x| x.to_string())
-                                            .collect::<Vec<_>>()
+                                        asm.set_source_code(
+                                            &asm_string.lines().collect::<Vec<_>>(),
+                                        );
                                     }
                                 }
                             });
@@ -337,7 +341,12 @@ impl TemplateApp {
 
                     // Reset the tree.
                     self.tree = egui_dock::DockState::new(vec![
-                        DockTab::new("WASM", TabContent::AssemblyViewer { asm: Vec::new() }),
+                        DockTab::new(
+                            "WASM",
+                            TabContent::AssemblyViewer {
+                                asm: CodeViewer::for_language("wasm"),
+                            },
+                        ),
                         DockTab::new(
                             "Source Code",
                             TabContent::SourceCodeViewer {
