@@ -1,4 +1,4 @@
-use crate::code_viewer::show_code;
+use crate::code_viewer::CodeViewer;
 use crate::data_provider::{SourceCodeView, TopsView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
@@ -28,15 +28,13 @@ impl egui_dock::TabViewer for TabViewer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
-        match &tab.contents {
-            TabContent::SourceCodeViewer {
-                code, first_line, ..
-            } => {
-                show_code(ui, code, "rust", *first_line);
+        match &mut tab.contents {
+            TabContent::SourceCodeViewer { code_viewer, .. } => {
+                code_viewer.show_code_as_table(ui);
             }
 
             TabContent::AssemblyViewer { asm } => {
-                show_code(ui, asm, "cpp", 0);
+                // show_code(ui, asm, "cpp", 0);
             }
         }
     }
@@ -60,10 +58,9 @@ impl DockTab {
 #[derive(serde::Deserialize, serde::Serialize)]
 enum TabContent {
     SourceCodeViewer {
+        code_viewer: CodeViewer,
         file_path: String,
-        code: Vec<String>, //Lines of code.
         first_address: u64,
-        first_line: u32, // First line of code corresponding to first_address.
     },
     AssemblyViewer {
         asm: Vec<String>,
@@ -111,12 +108,11 @@ impl Default for TemplateApp {
             tree: egui_dock::DockState::new(vec![
                 DockTab::new("WASM", TabContent::AssemblyViewer { asm: Vec::new() }),
                 DockTab::new(
-                    "Second",
+                    "Source",
                     TabContent::SourceCodeViewer {
-                        code: Vec::new(),
+                        code_viewer: CodeViewer::for_language("rust"),
                         file_path: "".into(),
                         first_address: 0,
-                        first_line: 0,
                     },
                 ),
             ]),
@@ -231,13 +227,13 @@ impl eframe::App for TemplateApp {
                                 } else {
                                     (String::new(), 0)
                                 };
+
                             self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
                                 match &mut tab.contents {
                                     TabContent::SourceCodeViewer {
-                                        code,
+                                        code_viewer,
                                         file_path,
                                         first_address,
-                                        first_line,
                                     } => {
                                         if let Some(data_provider) =
                                             self.file_entries[0].data_provider.as_ref()
@@ -247,41 +243,39 @@ impl eframe::App for TemplateApp {
                                                 if let Some(location) = data_provider
                                                     .get_location_for_addr(first_selected_address)
                                                 {
-                                                    *first_line = location.line.unwrap_or(0);
+                                                    code_viewer.set_highlighted_line(
+                                                        location.line.unwrap_or(0) as usize,
+                                                    );
                                                     if let Some(file) = location.file.as_ref() {
                                                         if file != file_path {
                                                             *file_path = file.clone();
                                                             if let Ok(source_code) =
                                                                 fs::read_to_string(file_path)
                                                             {
-                                                                *code = source_code
+                                                                let lines = source_code
                                                                     .lines()
-                                                                    .enumerate()
-                                                                    .map(|(i, line)| {
-                                                                        format!(
-                                                                            "{:04} | {}",
-                                                                            i + 1,
-                                                                            line
-                                                                        )
-                                                                    })
-                                                                    .collect::<Vec<_>>();
+                                                                    .collect::<Vec<&str>>();
+                                                                code_viewer.set_source_code(&lines);
                                                             } else {
-                                                                *code = vec![format!(
+                                                                code_viewer
+                                                                    .set_source_code(&[format!(
                                                                     "Couldn't find file for: {:?}",
                                                                     location
-                                                                )];
+                                                                )
+                                                                .as_str()]);
                                                             }
                                                         }
                                                     }
                                                 } else {
-                                                    *code = vec![format!(
+                                                    code_viewer.set_source_code(&[format!(
                                                         "Location not found for {:06x}",
                                                         first_selected_address
-                                                    )];
+                                                    )
+                                                    .as_str()]);
                                                 }
                                             }
                                         } else {
-                                            *code = vec!["Invalid data provider".into()]
+                                            code_viewer.set_source_code(&["Invalid data provider"]);
                                         }
                                     }
                                     TabContent::AssemblyViewer { asm } => {
@@ -347,10 +341,9 @@ impl TemplateApp {
                         DockTab::new(
                             "Source Code",
                             TabContent::SourceCodeViewer {
-                                code: Vec::new(),
+                                code_viewer: CodeViewer::for_language("rust"),
                                 file_path: "".into(),
                                 first_address: 0, //address that took us to that path.
-                                first_line: 0,
                             },
                         ),
                     ]);
