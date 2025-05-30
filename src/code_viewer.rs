@@ -1,64 +1,71 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RowData {
+    pub cells: Vec<String>,
+    pub bg_color: Option<egui::Color32>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CodeViewer {
-    code: Vec<String>,
+    rows: Vec<RowData>,
     language: String,
     function_start_line: usize, // Highlight it since it's the first line of the funtion selected.
+    has_scrolled: bool,
     selected_row: Option<usize>,
     can_select_rows: bool,
 }
 
 impl CodeViewer {
-    fn preprocess_code(code: &[&str]) -> Vec<String> {
-        code.iter().map(|x| x.to_string()).collect::<_>()
+    fn preprocess_code(&self, code: &[&str]) -> Vec<RowData> {
+        let mut row_data = Vec::new();
+        for (line, code) in code.iter().enumerate() {
+            let bg_color = if self.function_start_line == line {
+                Some(egui::Color32::from_rgb(200, 200, 200))
+            } else {
+                None
+            };
+            row_data.push(RowData {
+                cells: vec![format!("{}", line), code.to_string()],
+                bg_color,
+            });
+        }
+
+        row_data
     }
 
     pub fn for_language(language: &str) -> CodeViewer {
         CodeViewer {
             language: language.into(),
-            code: Vec::new(),
+            rows: Vec::new(),
             selected_row: None,
             function_start_line: 0,
+            has_scrolled: false,
             can_select_rows: language == "rust",
         }
     }
 
     pub fn set_source_code(&mut self, code: &[&str]) {
-        self.code = CodeViewer::preprocess_code(code);
+        self.rows = self.preprocess_code(code);
+        self.has_scrolled = false;
+    }
+
+    pub fn set_row_data(&mut self, rows: Vec<RowData>) {
+        self.rows = rows;
+        self.has_scrolled = false;
     }
 
     pub fn set_highlighted_line(&mut self, line: usize) {
-        self.function_start_line = line.min(self.code.len());
+        self.function_start_line = line.min(self.rows.len());
     }
 
-    pub fn show_code_as_file(&self, ui: &mut egui::Ui) {
-        if self.function_start_line >= self.code.len() {
-            return;
-        }
+    pub fn selected_row(&self) -> Option<usize> {
+        self.selected_row
+    }
 
-        for idx in 0..self.function_start_line {
-            code_view_ui(ui, &self.code[idx], &self.language);
-        }
-
-        {
-            let highlighted_line: egui::RichText = (&self.code[self.function_start_line]).into();
-
-            let prev_color = ui.style_mut().visuals.code_bg_color;
-            ui.style_mut().visuals.code_bg_color = egui::Color32::LIGHT_RED;
-
-            ui.code(
-                highlighted_line
-                    .code()
-                    .underline()
-                    .color(egui::Color32::BLACK),
-            );
-
-            ui.style_mut().visuals.code_bg_color = prev_color;
-        }
-
-        for idx in (self.function_start_line + 1)..self.code.len() {
-            code_view_ui(ui, &self.code[idx], &self.language);
+    pub fn highlight_line(&mut self, line: usize, color: egui::Color32) {
+        if let Some(row) = self.rows.get_mut(line) {
+            row.bg_color = Some(color);
         }
     }
 
@@ -68,7 +75,7 @@ impl CodeViewer {
             ui.style_mut().interaction.selectable_labels = false;
 
             let available_height = ui.available_height();
-            let table = egui_extras::TableBuilder::new(ui)
+            let mut table = egui_extras::TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::LEFT))
@@ -76,6 +83,24 @@ impl CodeViewer {
                 .column(egui_extras::Column::remainder())
                 .max_scroll_height(available_height)
                 .sense(egui::Sense::click());
+
+            let max_width = self.rows.iter().fold(0, |max_width, row| {
+                if row.cells.len() > max_width {
+                    return row.cells.len();
+                }
+
+                max_width
+            });
+
+            for _ in 2..max_width {
+                // First one is a hack since it's either address or line number
+                table = table.column(egui_extras::Column::remainder());
+            }
+
+            if !self.has_scrolled {
+                table = table.scroll_to_row(self.function_start_line, Some(egui::Align::TOP));
+                self.has_scrolled = true;
+            }
 
             table
                 .header(20.0, |mut header| {
@@ -87,26 +112,23 @@ impl CodeViewer {
                     });
                 })
                 .body(|body| {
-                    body.rows(20.0, self.code.len(), |mut row| {
+                    body.rows(20.0, self.rows.len(), |mut row| {
                         let idx = row.index();
 
                         if let Some(selected_row) = self.selected_row {
                             row.set_selected(idx == selected_row);
                         }
 
-                        row.col(|ui| {
-                            ui.label((idx + 1).to_string());
-                        });
-                        row.col(|ui| {
-                            if self.function_start_line == idx {
-                                let prev_color = ui.style_mut().visuals.code_bg_color;
-                                ui.style_mut().visuals.code_bg_color = egui::Color32::LIGHT_RED;
-                                ui.code(&self.code[idx]);
-                                ui.style_mut().visuals.code_bg_color = prev_color;
-                            } else {
-                                code_view_ui(ui, &self.code[idx], &self.language);
-                            }
-                        });
+                        for cell in self.rows[idx].cells.iter() {
+                            row.col(|ui| {
+                                if let Some(bg_color) = self.rows[idx].bg_color {
+                                    // Get the row's rect and paint it
+                                    let rect = ui.available_rect_before_wrap();
+                                    ui.painter().rect_filled(rect, 0.0, bg_color);
+                                }
+                                code_view_ui(ui, cell, &self.language);
+                            });
+                        }
 
                         if row.response().clicked() && self.can_select_rows {
                             self.selected_row = Some(idx);

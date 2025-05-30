@@ -1,5 +1,5 @@
 use crate::data_provider::{
-    DominatorsView, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
+    CodeLocation, DominatorsView, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
     FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, TopsView, ViewMode,
 };
 use addr2line::LookupResult;
@@ -29,6 +29,10 @@ pub struct DataProviderTwiggy {
     filter: Filter,
 
     wasm_data_bytes: Vec<u8>,
+
+    // This is a map of source file / line locations -> Assembly
+    locations_reverse_map: HashMap<CodeLocation, Vec<u64>>,
+    addr_to_location: HashMap<u64, CodeLocation>,
 }
 
 impl DataProviderTwiggy {
@@ -53,6 +57,10 @@ impl DataProviderTwiggy {
                 total_size += item.size();
             }
         }
+
+        let mut locations_reverse_map: HashMap<CodeLocation, Vec<u64>> = HashMap::default();
+        let mut modules = Addr2lineModules::parse(&wasm_data).ok();
+        let mut addr_to_location: HashMap<u64, CodeLocation> = HashMap::default();
 
         for item in items.iter() {
             // Filter out the meta root item
@@ -87,6 +95,25 @@ impl DataProviderTwiggy {
                     // We set the reader offset to 0 since range is an absolute offset in the wasm file.
                     // Decent reference here: https://blog.ttulka.com/learning-webassembly-2-wasm-binary-format/
                     (locals, function_ops) = get_locals_and_ops_for_function(&wasm_data, &range);
+
+                    if let Some(modules) = modules.as_mut() {
+                        for function_op in function_ops.iter() {
+                            let addr = function_op.address;
+                            if let Some(location_data) = find_frames(addr, modules) {
+                                if let (Some(file), Some(line)) =
+                                    (location_data.file, location_data.line)
+                                {
+                                    let key = CodeLocation {
+                                        file,
+                                        line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
+                                        column: 0,
+                                    };
+                                    addr_to_location.insert(addr, key.clone());
+                                    locations_reverse_map.entry(key).or_default().push(addr);
+                                }
+                            }
+                        }
+                    }
                 }
                 twiggy_ir::ItemKind::Data(_data) => (),
                 twiggy_ir::ItemKind::Debug(_debug_info) => (),
@@ -173,6 +200,8 @@ impl DataProviderTwiggy {
             items_filtered,
             filter: Filter::All,
             wasm_data_bytes: wasm_data,
+            locations_reverse_map,
+            addr_to_location,
         };
         provider.recompute_index_map();
 
@@ -448,12 +477,23 @@ impl DominatorsView for DataProviderTwiggy {
 }
 
 impl SourceCodeView for DataProviderTwiggy {
-    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<DwarfLocationData> {
-        let Some(mut modules) = Addr2lineModules::parse(&self.wasm_data_bytes).ok() else {
-            return None;
+    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<&CodeLocation> {
+        self.addr_to_location.get(&virtual_addr)
+    }
+
+    fn get_locations_for_line_of_code(
+        &self,
+        file: &str,
+        line: u32,
+        _column: u32,
+    ) -> Option<&Vec<u64>> {
+        let key = CodeLocation {
+            file: file.to_string(),
+            line,
+            column: 0,
         };
 
-        find_frames(virtual_addr, &mut modules)
+        self.locations_reverse_map.get(&key)
     }
 }
 

@@ -83,6 +83,19 @@ pub struct DwarfLocationData {
     pub column: Option<u32>,
 }
 
+#[derive(Debug, Eq, Clone, Hash, PartialEq)]
+pub struct CodeLocation {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+}
+
 pub trait SourceCodeView {
-    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<DwarfLocationData>;
+    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<&CodeLocation>;
+    fn get_locations_for_line_of_code(
+        &self,
+        file: &str,
+        line: u32,
+        column: u32,
+    ) -> Option<&Vec<u64>>;
 }
