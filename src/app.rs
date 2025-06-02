@@ -1,9 +1,10 @@
-use crate::code_viewer::show_code;
+use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{SourceCodeView, TopsView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -28,13 +29,15 @@ impl egui_dock::TabViewer for TabViewer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
-        match &tab.contents {
-            TabContent::SourceCodeViewer { code, .. } => {
-                show_code(ui, code, "rs");
+        let mut selected_line = None;
+        match &mut tab.contents {
+            TabContent::SourceCodeViewer { code_viewer, .. } => {
+                code_viewer.show_code_as_table(ui);
+                selected_line = code_viewer.selected_row();
             }
 
-            TabContent::AssemblyViewer { asm } => {
-                show_code(ui, asm, "rs");
+            TabContent::AssemblyViewer { asm, .. } => {
+                asm.show_code_as_table(ui);
             }
         }
     }
@@ -57,11 +60,17 @@ impl DockTab {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 enum TabContent {
-    SourceCodeViewer { file_path: String, code: String },
-    AssemblyViewer { asm: String },
+    SourceCodeViewer {
+        code_viewer: CodeViewer,
+        file_path: String,
+        first_address: u64,
+    },
+    AssemblyViewer {
+        asm: CodeViewer,
+        first_address: u64,
+    },
 }
 
-/// We derive Deserialize/Serialize so we can persist app state on shutdown.
 pub struct TemplateApp {
     file_dialog: FileDialog,
 
@@ -74,6 +83,14 @@ pub struct TemplateApp {
     file_entries: Vec<FileEntry>,
 
     tree: egui_dock::DockState<DockTab>,
+
+    settings: AppSettings,
+}
+
+#[derive(Debug, Default)]
+struct AppSettings {
+    source_code_search_folders: Vec<PathBuf>,
+    source_file_dialog: FileDialog,
 }
 
 enum AnalyzerState {
@@ -82,6 +99,23 @@ enum AnalyzerState {
 
 impl Default for TemplateApp {
     fn default() -> Self {
+        let mut tree = egui_dock::DockState::new(vec![DockTab::new(
+            "WASM",
+            TabContent::AssemblyViewer {
+                asm: CodeViewer::for_language("wasm"),
+                first_address: 0,
+            },
+        )]);
+
+        tree.add_window(vec![DockTab::new(
+            "Source",
+            TabContent::SourceCodeViewer {
+                code_viewer: CodeViewer::for_language("rust"),
+                file_path: "".into(),
+                first_address: 0,
+            },
+        )]);
+
         Self {
             file_dialog: FileDialog::new(),
             last_path_picked: "".into(),
@@ -92,16 +126,9 @@ impl Default for TemplateApp {
 
             file_entries: Vec::new(),
 
-            tree: egui_dock::DockState::new(vec![
-                DockTab::new("WASM", TabContent::AssemblyViewer { asm: "".into() }),
-                DockTab::new(
-                    "Second",
-                    TabContent::SourceCodeViewer {
-                        code: "".into(),
-                        file_path: "".into(),
-                    },
-                ),
-            ]),
+            tree,
+
+            settings: AppSettings::default(),
         }
     }
 }
@@ -119,6 +146,12 @@ impl TemplateApp {
         }
 
         Default::default()
+    }
+
+    fn show_src_folder_pick_window(&mut self, ctx: &egui::Context) {
+        egui::Window::new("Source code folders").show(ctx, |ui| {
+            self.file_dialog.pick_directory();
+        });
     }
 }
 
@@ -144,6 +177,12 @@ impl eframe::App for TemplateApp {
                     }
                 });
 
+                ui.menu_button("Settings", |ui| {
+                    if ui.button("Set source code folders").clicked() {
+                        self.show_src_folder_pick_window(ctx);
+                    }
+                });
+
                 self.file_dialog.update(ctx);
                 if let Some(path) = self.file_dialog.picked() {
                     if path != self.last_path_picked {
@@ -153,6 +192,11 @@ impl eframe::App for TemplateApp {
                         self.last_path_picked = path.into();
                         self.functions_explorer = FunctionsExplorer::default();
                     }
+                }
+
+                self.settings.source_file_dialog.update(ctx);
+                if let Some(folder) = self.settings.source_file_dialog.picked() {
+                    self.settings.source_code_search_folders.push(folder.into());
                 }
 
                 ui.add_space(16.0);
@@ -172,63 +216,114 @@ impl eframe::App for TemplateApp {
                             .show_functions_table(ui, data_provider);
 
                         if let Some(idx) = self.functions_explorer.selected_row {
-                            let (asm_string, first_address): (String, u64) =
-                                if let Some(data_provider) = &self.file_entries[0].data_provider {
-                                    (
-                                        data_provider.get_locals_at(idx).join("\n")
-                                            + "\n"
-                                            + &data_provider
-                                                .get_ops_at(idx)
-                                                .iter()
-                                                .map(|func_op| {
-                                                    format!(
-                                                        "{:06x} {}",
-                                                        func_op.address,
-                                                        func_op.op.clone()
-                                                    )
-                                                })
-                                                .collect::<Vec<String>>()
-                                                .join("\n"),
-                                        data_provider.get_start_addr(idx),
-                                    )
-                                } else {
-                                    (String::new(), 0)
-                                };
-                            self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
-                                match &mut tab.contents {
-                                    TabContent::SourceCodeViewer { code, file_path } => {
-                                        if let Some(data_provider) =
-                                            self.file_entries[0].data_provider.as_ref()
+                            let (
+                                mut asm_row_data,
+                                op_start_idx,
+                                ops_addresses,
+                                first_selected_address,
+                            ): (Vec<RowData>, usize, Vec<u64>, u64) = {
+                                let mut row_data = Vec::new();
+                                let mut ops_addresses = Vec::new();
+                                for (index, local) in
+                                    data_provider.get_locals_at(idx).iter().enumerate()
+                                {
+                                    row_data.push(RowData {
+                                        cells: vec![format!("{:?}", index), local.clone()],
+                                        bg_color: None,
+                                        tooltip: None,
+                                    });
+                                }
+
+                                for op in data_provider.get_ops_at(idx).iter() {
+                                    row_data.push(RowData {
+                                        cells: vec![format!("0x{:04x}", op.address), op.op.clone()],
+                                        bg_color: None,
+                                        tooltip: None,
+                                    });
+                                    ops_addresses.push(op.address);
+                                }
+
+                                (
+                                    row_data,
+                                    data_provider.get_locals_at(idx).len(),
+                                    ops_addresses,
+                                    data_provider.get_start_addr(idx),
+                                )
+                            };
+
+                            let mut code_rows = Vec::new();
+                            let mut current_color_idx = 0;
+                            let mut colors_for_source: HashMap<u32, egui::Color32> =
+                                HashMap::default();
+                            const COLORS: [egui::Color32; 4] = [
+                                egui::Color32::LIGHT_RED,
+                                egui::Color32::LIGHT_GREEN,
+                                egui::Color32::LIGHT_BLUE,
+                                egui::Color32::LIGHT_GRAY,
+                            ];
+
+                            let mut selected_file_path = "".to_string();
+                            if let Some(location) =
+                                data_provider.get_location_for_addr(first_selected_address)
+                            {
+                                selected_file_path = location.file.clone();
+                                if let Ok(source_code) = fs::read_to_string(&location.file) {
+                                    for (idx, line) in source_code.lines().enumerate() {
+                                        code_rows.push(RowData {
+                                            cells: vec![format!("{:?}", idx), line.to_string()],
+                                            bg_color: None,
+                                            tooltip: None,
+                                        });
+                                    }
+
+                                    for (idx, address) in ops_addresses.iter().enumerate() {
+                                        if let Some(location) =
+                                            data_provider.get_location_for_addr(*address)
                                         {
-                                            if let Some(location) =
-                                                data_provider.get_location_for_addr(first_address)
-                                            {
-                                                if let Some(file) = location.file.as_ref() {
-                                                    if file != file_path {
-                                                        *file_path = file.clone();
-                                                        if let Ok(source_code) =
-                                                            fs::read_to_string(file_path)
-                                                        {
-                                                            *code = source_code
-                                                        } else {
-                                                            *code = format!(
-                                                                "Couldn't find file for: {:?}",
-                                                                location
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            } else {
-                                                *code = format!(
-                                                    "Location not found for {:06x}",
-                                                    first_address
-                                                );
+                                            let color = colors_for_source
+                                                .entry(location.line)
+                                                .or_insert_with(|| {
+                                                    current_color_idx += 1;
+                                                    COLORS[current_color_idx % COLORS.len()]
+                                                });
+                                            // code_viewer.highlight_line(location.line as usize, *color);
+                                            if location.file == selected_file_path {
+                                                code_rows[location.line as usize].bg_color =
+                                                    Some(*color);
                                             }
-                                        } else {
-                                            *code = "Invalid data provider".into()
+
+                                            let asm_row_data =
+                                                &mut asm_row_data[op_start_idx + idx];
+                                            asm_row_data.bg_color = Some(*color);
+                                            asm_row_data.tooltip = Some(format!(
+                                                "File: {}\nLine: {}",
+                                                location.file, location.line
+                                            ));
                                         }
                                     }
-                                    TabContent::AssemblyViewer { asm } => *asm = asm_string.clone(),
+                                }
+                            }
+
+                            self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
+                                match &mut tab.contents {
+                                    TabContent::SourceCodeViewer {
+                                        code_viewer,
+                                        file_path,
+                                        first_address,
+                                    } => {
+                                        if *first_address != first_selected_address {
+                                            *first_address = first_selected_address;
+                                            *file_path = selected_file_path.clone();
+
+                                            code_viewer.set_row_data(code_rows.clone());
+                                        }
+                                    }
+                                    TabContent::AssemblyViewer { asm, first_address } => {
+                                        if *first_address != first_selected_address {
+                                            *first_address = first_selected_address;
+                                            asm.set_row_data(asm_row_data.clone());
+                                        }
+                                    }
                                 }
                             });
                         }
@@ -282,15 +377,24 @@ impl TemplateApp {
 
                     // Reset the tree.
                     self.tree = egui_dock::DockState::new(vec![
-                        DockTab::new("WASM", TabContent::AssemblyViewer { asm: "".into() }),
+                        DockTab::new(
+                            "WASM",
+                            TabContent::AssemblyViewer {
+                                asm: CodeViewer::for_language("wasm"),
+                                first_address: 0,
+                            },
+                        ),
                         DockTab::new(
                             "Source Code",
                             TabContent::SourceCodeViewer {
-                                code: "".into(),
+                                code_viewer: CodeViewer::for_language("rust"),
                                 file_path: "".into(),
+                                first_address: 0, //address that took us to that path.
                             },
                         ),
                     ]);
+
+                    // self.tree.split((0, 0), egui_dock::Split::Right, 0.5, )
 
                     next_state = None;
                 }
@@ -304,6 +408,7 @@ impl TemplateApp {
 const SERIALIZABLE_FIELDS: &[&str] = &[
     "last_path_picked",
     "functions_explorer",
+    "settings_src_folders",
     "file_entries",
     "tree",
 ];
@@ -317,6 +422,10 @@ impl serde::Serialize for TemplateApp {
         s.serialize_field("tree", &self.tree)?;
         s.serialize_field("last_path_picked", &self.last_path_picked)?;
         s.serialize_field("functions_explorer", &self.functions_explorer)?;
+        s.serialize_field(
+            "settings_src_folders",
+            &self.settings.source_code_search_folders,
+        )?;
 
         let mut files: Vec<(PathBuf, FileType)> = Vec::with_capacity(self.file_entries.len());
         for file_entry in &self.file_entries {
@@ -349,6 +458,7 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
                 let mut last_path_picked: Option<PathBuf> = None;
                 let mut functions_explorer = None;
                 let mut file_entries = None;
+                let mut settings = AppSettings::default();
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -360,6 +470,9 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
                         }
                         "functions_explorer" => {
                             functions_explorer = Some(map.next_value()?);
+                        }
+                        "settings_src_folders" => {
+                            settings.source_code_search_folders = map.next_value()?;
                         }
                         "file_entries" => {
                             let files: Vec<(PathBuf, FileType)> = map.next_value()?;
@@ -400,6 +513,7 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
                     functions_explorer,
                     file_entries,
                     tree,
+                    settings,
                 })
             }
         }

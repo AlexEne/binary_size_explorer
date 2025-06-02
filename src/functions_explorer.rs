@@ -155,7 +155,7 @@ impl FunctionsExplorer {
                         });
                     })
                     .body(|body| {
-                        body.rows(18.0, table_rows_count, |mut row| {
+                        body.rows(20.0, table_rows_count, |mut row| {
                             let row_index = if self.reversed_size_bytes {
                                 table_rows_count - 1 - row.index()
                             } else {
