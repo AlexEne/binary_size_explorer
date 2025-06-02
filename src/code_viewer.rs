@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct RowData {
     pub cells: Vec<String>,
     pub bg_color: Option<egui::Color32>,
+    pub tooltip: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,6 +29,7 @@ impl CodeViewer {
             row_data.push(RowData {
                 cells: vec![format!("{}", line), code.to_string()],
                 bg_color,
+                tooltip: None,
             });
         }
 
@@ -132,6 +134,12 @@ impl CodeViewer {
 
                         if row.response().clicked() && self.can_select_rows {
                             self.selected_row = Some(idx);
+                        }
+
+                        if let Some(tooltip) = &self.rows[idx].tooltip {
+                            row.response().on_hover_ui(|ui| {
+                                ui.label(tooltip);
+                            });
                         }
                     });
                 });

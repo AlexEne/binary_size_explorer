@@ -99,6 +99,23 @@ enum AnalyzerState {
 
 impl Default for TemplateApp {
     fn default() -> Self {
+        let mut tree = egui_dock::DockState::new(vec![DockTab::new(
+            "WASM",
+            TabContent::AssemblyViewer {
+                asm: CodeViewer::for_language("wasm"),
+                first_address: 0,
+            },
+        )]);
+
+        tree.add_window(vec![DockTab::new(
+            "Source",
+            TabContent::SourceCodeViewer {
+                code_viewer: CodeViewer::for_language("rust"),
+                file_path: "".into(),
+                first_address: 0,
+            },
+        )]);
+
         Self {
             file_dialog: FileDialog::new(),
             last_path_picked: "".into(),
@@ -109,23 +126,7 @@ impl Default for TemplateApp {
 
             file_entries: Vec::new(),
 
-            tree: egui_dock::DockState::new(vec![
-                DockTab::new(
-                    "WASM",
-                    TabContent::AssemblyViewer {
-                        asm: CodeViewer::for_language("wasm"),
-                        first_address: 0,
-                    },
-                ),
-                DockTab::new(
-                    "Source",
-                    TabContent::SourceCodeViewer {
-                        code_viewer: CodeViewer::for_language("rust"),
-                        file_path: "".into(),
-                        first_address: 0,
-                    },
-                ),
-            ]),
+            tree,
 
             settings: AppSettings::default(),
         }
@@ -229,6 +230,7 @@ impl eframe::App for TemplateApp {
                                     row_data.push(RowData {
                                         cells: vec![format!("{:?}", index), local.clone()],
                                         bg_color: None,
+                                        tooltip: None,
                                     });
                                 }
 
@@ -236,6 +238,7 @@ impl eframe::App for TemplateApp {
                                     row_data.push(RowData {
                                         cells: vec![format!("0x{:04x}", op.address), op.op.clone()],
                                         bg_color: None,
+                                        tooltip: None,
                                     });
                                     ops_addresses.push(op.address);
                                 }
@@ -269,6 +272,7 @@ impl eframe::App for TemplateApp {
                                         code_rows.push(RowData {
                                             cells: vec![format!("{:?}", idx), line.to_string()],
                                             bg_color: None,
+                                            tooltip: None,
                                         });
                                     }
 
@@ -288,8 +292,13 @@ impl eframe::App for TemplateApp {
                                                     Some(*color);
                                             }
 
-                                            asm_row_data[op_start_idx + idx].bg_color =
-                                                Some(*color);
+                                            let asm_row_data =
+                                                &mut asm_row_data[op_start_idx + idx];
+                                            asm_row_data.bg_color = Some(*color);
+                                            asm_row_data.tooltip = Some(format!(
+                                                "File: {}\nLine: {}",
+                                                location.file, location.line
+                                            ));
                                         }
                                     }
                                 }
@@ -384,6 +393,8 @@ impl TemplateApp {
                             },
                         ),
                     ]);
+
+                    // self.tree.split((0, 0), egui_dock::Split::Right, 0.5, )
 
                     next_state = None;
                 }
