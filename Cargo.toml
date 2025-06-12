@@ -17,6 +17,7 @@ eframe = { version = "0.31", default-features = false, features = [
     "wayland",       # To support Linux (and CI)
     "x11",           # To support older Linux distributions (restores one of the default features)
 ] }
+emath = "0.31"
 env_logger = "0.11.8"
 serde = { version = "1.0.219", features = ["derive"] }
 twiggy-analyze = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
@@ -31,6 +32,11 @@ wasm-tools = { version = "1.230.0", features = [
 ], default-features = false }
 addr2line = "0.24.2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.172"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Memory"] }
 
 [profile.release]
 opt-level = 2

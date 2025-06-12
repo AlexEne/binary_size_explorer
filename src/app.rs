@@ -1,5 +1,5 @@
 use crate::code_viewer::{CodeViewer, RowData};
-use crate::data_provider::{SourceCodeView, TopsView};
+use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use egui_file_dialog::FileDialog;
@@ -29,11 +29,9 @@ impl egui_dock::TabViewer for TabViewer {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
-        let mut selected_line = None;
         match &mut tab.contents {
             TabContent::SourceCodeViewer { code_viewer, .. } => {
                 code_viewer.show_code_as_table(ui);
-                selected_line = code_viewer.selected_row();
             }
 
             TabContent::AssemblyViewer { asm, .. } => {
@@ -149,7 +147,7 @@ impl TemplateApp {
     }
 
     fn show_src_folder_pick_window(&mut self, ctx: &egui::Context) {
-        egui::Window::new("Source code folders").show(ctx, |ui| {
+        egui::Window::new("Source code folders").show(ctx, |_| {
             self.file_dialog.pick_directory();
         });
     }
