@@ -1,10 +1,14 @@
-use crate::data_provider::{
-    CodeLocation, DominatorsView, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
-    FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, TopsView, ViewMode,
+use crate::{
+    arena::{array::Array, scratch::scratch_arena},
+    data_provider::{
+        CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
+        FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
+    },
+    gui::tree_view::{TreeItemState, TreeState},
 };
 use addr2line::LookupResult;
 use egui::ahash::{HashMap, HashMapExt};
-use std::{ops::Range, path};
+use std::ops::Range;
 use twiggy_opt::CommonCliOptions;
 use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::BinaryReader;
@@ -12,23 +16,18 @@ use wasmparser::BinaryReader;
 pub struct FunctionData {
     pub function_property: FunctionProperty,
     pub debug_info: FunctionPropertyDebugInfo,
-    pub open: bool,
-    pub visible: bool,
-    pub children: Vec<usize>,
 }
 
 pub struct DataProviderTwiggy {
-    view_mode: ViewMode,
-    raw_data: Vec<FunctionData>,
+    pub view_mode: ViewMode,
+    pub raw_data: Vec<FunctionData>,
 
-    roots: Vec<usize>,
-    items_filtered: Vec<usize>,
-    total_size: u32,
-    total_percent: f32,
+    pub total_size: u32,
+    pub total_percent: f32,
 
     filter: Filter,
-
-    wasm_data_bytes: Vec<u8>,
+    pub top_view_items_filtered: Vec<usize>,
+    pub dominator_view_tree_state: TreeState,
 
     // This is a map of source file / line locations -> Assembly
     locations_reverse_map: HashMap<CodeLocation, Vec<u64>>,
@@ -36,7 +35,7 @@ pub struct DataProviderTwiggy {
 }
 
 impl DataProviderTwiggy {
-    pub fn from_path<P: AsRef<path::Path>>(path: P) -> Self {
+    pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Self {
         let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
 
         let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
@@ -136,70 +135,72 @@ impl DataProviderTwiggy {
                     locals,
                     function_ops,
                 },
-                open: false,
-                visible: true,
-                children: Vec::with_capacity(
-                    items
-                        .dominator_tree()
-                        .get(&item.id())
-                        .map(|children| children.len())
-                        .unwrap_or(4),
-                ),
             });
         }
 
         let dominator_tree = items.dominator_tree();
-        for item in items.iter() {
-            let Some(index) = id_to_idx.get(&item.id()).copied() else {
-                continue;
+        let mut tree_items: Vec<TreeItemState> = Vec::with_capacity(raw_data.len());
+
+        let scratch = scratch_arena(&[]);
+        let mut node_stack = Array::new(&scratch, raw_data.len());
+        let mut children_scratch = Array::new(&scratch, raw_data.len());
+        node_stack.push((0, items.meta_root()));
+
+        while let Some((parent_index, id)) = node_stack.pop() {
+            let index = tree_items.len();
+            let indent = if !tree_items.is_empty() {
+                tree_items[parent_index].indent + 1
+            } else {
+                0
             };
+            tree_items.push(TreeItemState {
+                index: id_to_idx.get(&id).copied().unwrap_or(0),
+                parent: parent_index,
+                descendants_count: 0,
+                opened: false,
+                force_opened: false,
+                visible: true,
+                indent,
+            });
 
-            if let Some(children_ids) = dominator_tree.get(&item.id()) {
-                let mut children = Vec::with_capacity(raw_data[index].children.len());
-                for child_id in children_ids {
-                    if let Some(child_index) = id_to_idx.get(child_id).copied() {
-                        children.push(child_index);
-                    }
-                }
+            if let Some(children) = dominator_tree.get(&id) {
+                children_scratch.clear();
+                children_scratch.extend_from_slice(&children[..]);
 
-                children.sort_by(|a, b| {
-                    raw_data[*b]
+                // Order as asc because children will be processed
+                // in the reverse order
+                children_scratch.sort_by(|a, b| {
+                    let a: usize = id_to_idx.get(&a).copied().unwrap_or(0);
+                    let b: usize = id_to_idx.get(&b).copied().unwrap_or(0);
+                    raw_data[a]
                         .function_property
                         .retained_size_bytes
-                        .cmp(&raw_data[*a].function_property.retained_size_bytes)
+                        .cmp(&raw_data[b].function_property.retained_size_bytes)
                 });
 
-                raw_data[index].children = children;
-            }
-        }
-
-        let mut roots = Vec::new();
-        if let Some(root_ids) = items.dominator_tree().get(&items.meta_root()) {
-            for root_id in root_ids {
-                if let Some(idx) = id_to_idx.get(root_id).copied() {
-                    roots.push(idx);
+                for &child in children_scratch.iter() {
+                    node_stack.push((index, child));
                 }
             }
         }
 
-        roots.sort_by(|a, b| {
-            raw_data[*b]
-                .function_property
-                .retained_size_bytes
-                .cmp(&raw_data[*a].function_property.retained_size_bytes)
-        });
+        for index in (0..tree_items.len()).rev() {
+            let parent = tree_items[index].parent;
+            let descendants_count = tree_items[index].descendants_count;
+            tree_items[parent].descendants_count += descendants_count + 1;
+        }
 
-        let items_filtered: Vec<usize> = Vec::with_capacity(raw_data.len());
+        let top_view_items_filtered = Vec::with_capacity(raw_data.len());
+        let dominator_view_tree_state = TreeState::new(tree_items);
 
         let mut provider = DataProviderTwiggy {
             view_mode: ViewMode::Tops,
             raw_data,
             total_size: 0,
             total_percent: 0.0,
-            roots,
-            items_filtered,
             filter: Filter::All,
-            wasm_data_bytes: wasm_data,
+            top_view_items_filtered,
+            dominator_view_tree_state,
             locations_reverse_map,
             addr_to_location,
         };
@@ -249,7 +250,7 @@ impl DataProviderTwiggy {
     fn recompute_index_map(&mut self) {
         match self.view_mode {
             ViewMode::Tops => {
-                self.items_filtered.clear();
+                self.top_view_items_filtered.clear();
                 self.total_size = 0;
                 self.total_percent = 0.0;
                 for idx in 0..self.raw_data.len() {
@@ -257,14 +258,14 @@ impl DataProviderTwiggy {
                     let added = match &self.filter {
                         Filter::NameFilter { name } => {
                             if item.raw_name.to_lowercase().contains(name) {
-                                self.items_filtered.push(idx);
+                                self.top_view_items_filtered.push(idx);
                                 true
                             } else {
                                 false
                             }
                         }
                         Filter::All => {
-                            self.items_filtered.push(idx);
+                            self.top_view_items_filtered.push(idx);
                             true
                         }
                     };
@@ -277,7 +278,7 @@ impl DataProviderTwiggy {
 
                 let Self {
                     raw_data,
-                    items_filtered,
+                    top_view_items_filtered: items_filtered,
                     ..
                 } = self;
 
@@ -289,48 +290,6 @@ impl DataProviderTwiggy {
                 });
             }
             ViewMode::Dominators => {
-                fn should_be_visible(
-                    raw_data: &mut Vec<FunctionData>,
-                    total_size: &mut u32,
-                    total_percent: &mut f32,
-                    idx: usize,
-                    parent_visible: bool,
-                    filter: &str,
-                ) -> bool {
-                    let item = &raw_data[idx];
-
-                    let name = item.function_property.demangled_name.clone().unwrap();
-                    let visible = name.to_lowercase().contains(filter);
-
-                    if visible && !parent_visible {
-                        *total_size += item.function_property.retained_size_bytes;
-                        *total_percent += item.function_property.retained_size_percent;
-                    }
-
-                    let children = item.children.clone();
-                    let mut child_visible = false;
-                    for child in children {
-                        if should_be_visible(
-                            raw_data,
-                            total_size,
-                            total_percent,
-                            child,
-                            parent_visible | visible,
-                            filter,
-                        ) {
-                            child_visible = true;
-                        }
-                    }
-
-                    if child_visible {
-                        raw_data[idx].open = true;
-                    }
-
-                    raw_data[idx].visible = parent_visible | visible | child_visible;
-
-                    raw_data[idx].visible
-                }
-
                 let filter = match &self.filter {
                     Filter::All => "",
                     Filter::NameFilter { name } => name,
@@ -339,16 +298,48 @@ impl DataProviderTwiggy {
                 self.total_size = 0;
                 self.total_percent = 0.0;
 
-                for &root in &self.roots {
-                    should_be_visible(
-                        &mut self.raw_data,
-                        &mut self.total_size,
-                        &mut self.total_percent,
-                        root,
-                        false,
-                        filter,
-                    );
+                let mut idx = 1;
+                while idx < self.dominator_view_tree_state.nodes.len() {
+                    let item = &self.raw_data[self.dominator_view_tree_state.nodes[idx].index];
+                    let name = item.function_property.name();
+
+                    // TODO (bruno): remove this string allocation
+                    let visible = name.to_lowercase().contains(filter);
+
+                    self.dominator_view_tree_state.nodes[idx].force_opened = false;
+                    self.dominator_view_tree_state.nodes[idx].visible = visible;
+
+                    if visible {
+                        self.total_size += item.function_property.retained_size_bytes;
+                        self.total_percent += item.function_property.retained_size_percent;
+
+                        // Force parents to be visible
+                        let mut cur_idx = self.dominator_view_tree_state.nodes[idx].parent;
+                        while cur_idx > 0 {
+                            let cur_node = &mut self.dominator_view_tree_state.nodes[cur_idx];
+                            cur_node.force_opened = true;
+                            cur_node.visible = true;
+                            cur_idx = cur_node.parent;
+                        }
+
+                        // Clear force_opened from descendants
+                        let mut cur_idx = idx + 1;
+                        while cur_idx
+                            <= idx + self.dominator_view_tree_state.nodes[idx].descendants_count
+                        {
+                            self.dominator_view_tree_state.nodes[cur_idx].force_opened = false;
+                            self.dominator_view_tree_state.nodes[cur_idx].visible = true;
+                            cur_idx += 1;
+                        }
+
+                        idx += self.dominator_view_tree_state.nodes[idx].descendants_count + 1;
+                        continue;
+                    }
+
+                    idx += 1;
                 }
+
+                self.dominator_view_tree_state.recompute_indices();
             }
         }
     }
@@ -380,99 +371,21 @@ impl FunctionsView for DataProviderTwiggy {
     fn get_total_percent(&self) -> f32 {
         self.total_percent
     }
-}
-
-impl TopsView for DataProviderTwiggy {
-    fn get_tops_items_count(&self) -> usize {
-        self.items_filtered.len()
-    }
-
-    fn get_tops_item_at(&self, idx: usize) -> &FunctionProperty {
-        let original_idx = self.items_filtered[idx];
-        &self.raw_data[original_idx].function_property
-    }
 
     fn get_locals_at(&self, idx: usize) -> &[String] {
-        let original_idx = self.items_filtered[idx];
-        &self.raw_data[original_idx].debug_info.locals
+        &self.raw_data[idx].debug_info.locals
     }
 
     fn get_ops_at(&self, idx: usize) -> &[FunctionOp] {
-        let original_idx = self.items_filtered[idx];
-        &self.raw_data[original_idx].debug_info.function_ops
+        &self.raw_data[idx].debug_info.function_ops
     }
 
     fn get_start_addr(&self, idx: usize) -> u64 {
-        let original_idx = self.items_filtered[idx];
-        let Some(first_op) = self.raw_data[original_idx].debug_info.function_ops.first() else {
+        let Some(first_op) = self.raw_data[idx].debug_info.function_ops.first() else {
             return 0;
         };
 
         first_op.address
-    }
-}
-
-impl DominatorsView for DataProviderTwiggy {
-    fn get_roots(&self) -> &Vec<usize> {
-        &self.roots
-        // if let Filter::NameFilter { name } = &self.filter {
-        //     let mut roots: Vec<usize> = Vec::with_capacity(self.roots.len());
-        //     for &root in &self.roots {
-        //         if !self.raw_data[root]
-        //             .function_property
-        //             .raw_name
-        //             .to_lowercase()
-        //             .contains(name)
-        //         {
-        //             continue;
-        //         }
-
-        //         roots.push(root);
-        //     }
-
-        //     return roots;
-        // } else {
-        //     self.roots.clone()
-        // }
-    }
-
-    fn get_dominator_item_at(&self, idx: usize) -> &FunctionProperty {
-        &self.raw_data[idx].function_property
-    }
-
-    fn get_children_of(&self, idx: usize) -> &Vec<usize> {
-        &self.raw_data[idx].children
-        // if let Filter::NameFilter { name } = &self.filter {
-        //     let mut children: Vec<usize> = Vec::with_capacity(self.roots.len());
-        //     for &child in &self.raw_data[idx].children {
-        //         if !self.raw_data[child]
-        //             .function_property
-        //             .raw_name
-        //             .to_lowercase()
-        //             .contains(name)
-        //         {
-        //             continue;
-        //         }
-
-        //         children.push(child);
-        //     }
-
-        //     return children;
-        // } else {
-        //     self.raw_data[idx].children.clone()
-        // }
-    }
-
-    fn is_child_visible(&self, idx: usize) -> bool {
-        self.raw_data[idx].visible
-    }
-
-    fn is_child_open(&self, idx: usize) -> bool {
-        self.raw_data[idx].open
-    }
-
-    fn set_child_open(&mut self, idx: usize, open: bool) {
-        self.raw_data[idx].open = open;
     }
 }
 

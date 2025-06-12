@@ -8,6 +8,16 @@ pub struct FunctionProperty {
     pub retained_size_percent: f32,
 }
 
+impl FunctionProperty {
+    pub fn name(&self) -> &str {
+        if let Some(demangled_name) = self.demangled_name.as_ref() {
+            demangled_name
+        } else {
+            &self.raw_name
+        }
+    }
+}
+
 pub struct FunctionPropertyDebugInfo {
     pub locals: Vec<String>,
     pub function_ops: Vec<FunctionOp>,
@@ -34,11 +44,15 @@ pub enum ViewMode {
     Dominators,
 }
 
-pub trait FunctionsView: TopsView + DominatorsView {
+pub trait FunctionsView {
     fn set_view_mode(&mut self, view_mode: ViewMode);
     fn set_filter(&mut self, filter: Filter);
     fn get_total_size(&self) -> u32;
     fn get_total_percent(&self) -> f32;
+
+    fn get_locals_at(&self, idx: usize) -> &[String];
+    fn get_ops_at(&self, idx: usize) -> &[FunctionOp];
+    fn get_start_addr(&self, idx: usize) -> u64;
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,24 +70,6 @@ impl Filter {
             name: name.into().to_lowercase(),
         }
     }
-}
-
-pub trait TopsView {
-    fn get_tops_items_count(&self) -> usize;
-    fn get_tops_item_at(&self, idx: usize) -> &FunctionProperty;
-
-    fn get_locals_at(&self, idx: usize) -> &[String];
-    fn get_ops_at(&self, idx: usize) -> &[FunctionOp];
-    fn get_start_addr(&self, idx: usize) -> u64;
-}
-
-pub trait DominatorsView {
-    fn get_roots(&self) -> &Vec<usize>;
-    fn get_dominator_item_at(&self, idx: usize) -> &FunctionProperty;
-    fn get_children_of(&self, idx: usize) -> &Vec<usize>;
-    fn is_child_visible(&self, idx: usize) -> bool;
-    fn set_child_open(&mut self, idx: usize, open: bool);
-    fn is_child_open(&self, idx: usize) -> bool;
 }
 
 #[derive(Debug)]

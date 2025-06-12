@@ -255,7 +255,9 @@ dependencies = [
  "egui-file-dialog",
  "egui_dock",
  "egui_extras",
+ "emath",
  "env_logger",
+ "libc",
  "serde",
  "twiggy-analyze",
  "twiggy-ir",
@@ -263,6 +265,7 @@ dependencies = [
  "twiggy-parser",
  "wasm-tools",
  "wasmparser 0.230.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
