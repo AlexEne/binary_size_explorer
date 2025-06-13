@@ -1,7 +1,12 @@
-use std::{cell::Cell, mem::MaybeUninit, ptr::NonNull};
+use std::{
+    cell::Cell,
+    mem::MaybeUninit,
+    ptr::{NonNull, slice_from_raw_parts_mut},
+};
 
 pub mod array;
 pub mod scratch;
+pub mod string;
 
 #[cfg(unix)]
 mod memory {
@@ -166,8 +171,8 @@ impl Arena {
     ///
     /// The memory is guaranteed to contain only zero bytes.
     pub fn alloc_zeroed<T: ZeroBits>(&self) -> &mut T {
-        let size = std::mem::size_of::<MaybeUninit<T>>();
-        let align = std::mem::align_of::<MaybeUninit<T>>();
+        let size = std::mem::size_of::<T>();
+        let align = std::mem::align_of::<T>();
 
         let ptr = self.alloc_raw(size, align).as_ptr();
         unsafe {
@@ -177,7 +182,20 @@ impl Arena {
         unsafe { &mut *ptr.cast() }
     }
 
-    fn alloc_raw(&self, size: usize, align: usize) -> NonNull<u8> {
+    pub fn alloc_slice_zeroed<T: ZeroBits>(&self, len: usize) -> &mut [T] {
+        let size = std::mem::size_of::<T>();
+        let align = std::mem::align_of::<T>();
+
+        let ptr = self.alloc_raw(size * len, align).as_ptr();
+        unsafe {
+            std::ptr::write_bytes(ptr, 0, size * len);
+        }
+
+        unsafe { &mut *slice_from_raw_parts_mut::<T>(ptr.cast(), len) }
+    }
+
+    #[track_caller]
+    pub fn alloc_raw(&self, size: usize, align: usize) -> NonNull<u8> {
         assert_pow_of_2!(align);
 
         let mut start = self.offset.get();
@@ -205,6 +223,22 @@ impl Arena {
 
         self.offset.set(end);
         unsafe { self.buffer.add(start) }
+    }
+
+    pub fn shrink(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
+        debug_assert!(old_size >= new_size);
+
+        // It only makes sense to shrink the last allocation.
+        // The arena doesn't handle deallocation and it will
+        // not re-allocate any released memory in between two allocations
+        if unsafe { ptr.add(old_size) == self.buffer.add(self.offset.get()) } {
+            self.offset.set(self.offset.get() - (old_size - new_size));
+        } else {
+            debug_assert!(
+                false,
+                "Attempting to shrink memory that was not the last allocated"
+            );
+        }
     }
 
     /// The offset of the arena represents the number of bytes

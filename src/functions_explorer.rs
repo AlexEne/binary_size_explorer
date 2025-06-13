@@ -190,7 +190,7 @@ impl FunctionsExplorer {
                             });
 
                             row.col(|ui| {
-                                ui.label(&filtered_item.raw_name);
+                                ui.label(filtered_item.raw_name.as_str());
                             });
 
                             row.col(|ui| {
@@ -198,7 +198,8 @@ impl FunctionsExplorer {
                                     filtered_item
                                         .monomorphization_of
                                         .as_ref()
-                                        .unwrap_or(&"".to_string()),
+                                        .map(|m| m.as_str())
+                                        .unwrap_or(""),
                                 );
                             });
 

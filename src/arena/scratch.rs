@@ -25,11 +25,11 @@ impl Deref for ScratchArena<'_> {
     }
 }
 
-pub fn scratch_arena(arenas: &[Arena]) -> ScratchArena<'_> {
+pub fn scratch_arena<'a>(arenas: &[&'a Arena]) -> ScratchArena<'a> {
     unsafe {
         for sa in &mut SCRATCH_ARENAS[..] {
             if sa.buffer == NonNull::dangling() {
-                *sa = Arena::new(2 * 1024 * 1024);
+                *sa = Arena::new(32 * 1024 * 1024 * 1024);
             }
 
             for arena in arenas {

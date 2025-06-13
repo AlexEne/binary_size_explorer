@@ -1,13 +1,14 @@
 use std::{
+    hash::Hash,
     ops::{Deref, DerefMut, Index, IndexMut},
-    ptr::{NonNull, slice_from_raw_parts_mut},
+    ptr::{NonNull, copy_nonoverlapping, slice_from_raw_parts_mut},
     slice::{self, SliceIndex},
 };
 
 use super::Arena;
 
 /// A contiguous array type.
-pub struct Array<'a, T: Copy> {
+pub struct Array<'a, T> {
     #[allow(unused)]
     arena: &'a Arena,
 
@@ -16,7 +17,8 @@ pub struct Array<'a, T: Copy> {
     capacity: usize,
 }
 
-impl<'a, T: Copy> Array<'a, T> {
+impl<'a, T> Array<'a, T> {
+    #[track_caller]
     pub fn new(arena: &'a Arena, capacity: usize) -> Self {
         Self {
             arena,
@@ -28,6 +30,16 @@ impl<'a, T: Copy> Array<'a, T> {
                 .cast(),
             len: 0,
             capacity,
+        }
+    }
+
+    #[inline]
+    pub fn shrink_to_fit(&mut self) {
+        // The capacity is never less than the length, and there's nothing to do when
+        // they are equal.
+        if self.capacity > self.len {
+            self.arena.shrink(self.buf.cast(), self.capacity, self.len);
+            self.capacity = self.len();
         }
     }
 
@@ -58,7 +70,7 @@ impl<'a, T: Copy> Array<'a, T> {
     #[track_caller]
     pub fn push(&mut self, item: T) {
         if self.len == self.capacity {
-            panic!("Not enough capacity");
+            panic!("Not enough capacity {}", self.capacity);
         }
 
         unsafe { self.buf.add(self.len).write(item) };
@@ -92,7 +104,7 @@ impl<'a, T: Copy> Array<'a, T> {
 
         self.len -= 1;
 
-        Some(unsafe { *self.buf.add(self.len).as_ptr() })
+        Some(unsafe { std::ptr::read(self.buf.add(self.len).as_ptr()) })
     }
 
     /// Clones and appends all elements in a slice to the `Array`.
@@ -118,13 +130,39 @@ impl<'a, T: Copy> Array<'a, T> {
     /// assert_eq!(arr.as_slice(), &[1, 2, 3, 4]);
     /// ```
     #[track_caller]
-    pub fn extend_from_slice(&mut self, slice: &[T]) {
+    pub fn extend_from_slice(&mut self, slice: &[T])
+    where
+        T: Copy,
+    {
         if self.capacity - self.len < slice.len() {
-            panic!("Not enough capacity");
+            panic!(
+                "Not enough capacity {}<{}",
+                self.capacity,
+                self.len + slice.len()
+            );
         }
 
         unsafe { &mut *slice_from_raw_parts_mut(self.buf.add(self.len).as_ptr(), slice.len()) }
             .copy_from_slice(slice);
+
+        self.len += slice.len();
+    }
+
+    #[track_caller]
+    pub unsafe fn extend_from_slice_unchecked(&mut self, slice: &[T]) {
+        if self.capacity - self.len < slice.len() {
+            panic!(
+                "Not enough capacity {}<{}",
+                self.capacity,
+                self.len + slice.len()
+            );
+        }
+
+        unsafe {
+            copy_nonoverlapping(slice.as_ptr(), self.buf.as_ptr(), slice.len());
+        }
+        // unsafe { &mut *slice_from_raw_parts_mut(self.buf.add(self.len).as_ptr(), slice.len()) }
+        //     .cop(slice);
 
         self.len += slice.len();
     }
@@ -319,7 +357,7 @@ impl<'a, T: Copy> Array<'a, T> {
     }
 }
 
-impl<'a, Idx, T: Copy> Index<Idx> for Array<'a, T>
+impl<'a, Idx, T> Index<Idx> for Array<'a, T>
 where
     Idx: SliceIndex<[T]>,
 {
@@ -330,7 +368,7 @@ where
     }
 }
 
-impl<'a, Idx, T: Copy> IndexMut<Idx> for Array<'a, T>
+impl<'a, Idx, T> IndexMut<Idx> for Array<'a, T>
 where
     Idx: SliceIndex<[T]>,
 {
@@ -339,7 +377,7 @@ where
     }
 }
 
-impl<'a, T: Copy> Deref for Array<'a, T> {
+impl<'a, T> Deref for Array<'a, T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -347,13 +385,13 @@ impl<'a, T: Copy> Deref for Array<'a, T> {
     }
 }
 
-impl<'a, T: Copy> DerefMut for Array<'a, T> {
+impl<'a, T> DerefMut for Array<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_mut_slice()
     }
 }
 
-impl<'a, T: Copy + PartialEq> PartialEq for Array<'a, T> {
+impl<'a, T: PartialEq> PartialEq for Array<'a, T> {
     fn eq(&self, other: &Self) -> bool {
         if self.len != other.len {
             return false;
@@ -367,7 +405,15 @@ impl<'a, T: Copy + PartialEq> PartialEq for Array<'a, T> {
         true
     }
 }
-impl<'a, T: Copy + Eq> Eq for Array<'a, T> {}
+impl<'a, T: Eq> Eq for Array<'a, T> {}
+
+impl<'a, T: Hash> Hash for Array<'a, T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        for index in 0..self.len {
+            self[index].hash(state);
+        }
+    }
+}
 
 impl<'a> std::fmt::Write for Array<'a, u8> {
     fn write_str(&mut self, s: &str) -> std::fmt::Result {
