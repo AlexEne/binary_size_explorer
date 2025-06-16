@@ -43,6 +43,11 @@ impl<'a> String<'a> {
         self.innner.extend_from_slice(string.as_bytes());
     }
 
+    #[inline]
+    pub fn clear(&mut self) {
+        self.innner.clear();
+    }
+
     pub fn as_str(&self) -> &str {
         self
     }

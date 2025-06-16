@@ -31,6 +31,9 @@ wasm-tools = { version = "1.230.0", features = [
     "addr2line",
 ], default-features = false }
 addr2line = "0.24.2"
+profiling = { path = "../profiling/profiling", features = [
+    "profile-with-superluminal",
+] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.172"
@@ -38,8 +41,13 @@ libc = "0.2.172"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Memory"] }
 
-[profile.release]
-opt-level = 2
+# [profile.release]
+# opt-level = 2
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+# split-debuginfo = "packed"
 
 [profile.dev.package."*"]
 opt-level = 2

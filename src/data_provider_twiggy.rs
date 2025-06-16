@@ -41,16 +41,14 @@ pub struct DataProviderTwiggy<'a> {
 }
 
 impl<'a> DataProviderTwiggy<'a> {
+    #[profiling::function]
     pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Self {
-        let start = Instant::now();
-        let opts = twiggy_opt::Options::Top(twiggy_opt::Top::new());
+        let wasm_data = std::fs::read(path).unwrap();
 
-        let mut items = twiggy_parser::read_and_parse(&path, opts.parse_mode()).unwrap();
+        let mut items = twiggy_parser::parse(&wasm_data).unwrap();
         let mut id_to_idx = HashMap::new();
 
         items.compute_retained_sizes();
-
-        let wasm_data = std::fs::read(path).unwrap();
 
         let ignore_item_by_name = |name: &str| -> bool {
             name.starts_with("custom section '.debug_") || name == "\"function names\" subsection"
@@ -65,12 +63,10 @@ impl<'a> DataProviderTwiggy<'a> {
             }
         }
 
-        println!("Item COut {}", item_count);
         let mut raw_data = Array::new(arena, item_count);
         let mut modules = Addr2lineModules::parse(&wasm_data).ok();
         let mut code_location_count = 0;
 
-        // let mut idx = 0;
         for item in items.iter() {
             // Filter out the meta root item
             if item.id() == items.meta_root() {
@@ -84,9 +80,6 @@ impl<'a> DataProviderTwiggy<'a> {
                 // Skip debug info from every stat
                 continue;
             }
-
-            // println!("Iteration {idx}");
-            // idx += 1;
 
             let shallow_size_bytes = item.size();
             let shallow_size_percent = (shallow_size_bytes as f32 / total_size as f32) * 100.0;
@@ -244,8 +237,6 @@ impl<'a> DataProviderTwiggy<'a> {
         };
         provider.recompute_index_map(Filter::All);
 
-        println!("Time to load {:?}", (Instant::now() - start).as_secs_f32());
-
         provider
     }
 }
@@ -278,7 +269,7 @@ fn get_locals_and_ops_for_function<'a, 'b>(
     let mut body = function_body.get_operators_reader().unwrap();
 
     let scratch = scratch_arena(&[arena]);
-    let mut temp_ops = Array::new(&scratch, 4096 * 32);
+    let mut temp_ops = Array::new(&scratch, 4096 * 128);
     while let Ok((op, offset)) = body.read_with_offset() {
         // let addr = 0x000273 + offset;
         let addr = range.start + offset;
@@ -293,9 +284,6 @@ fn get_locals_and_ops_for_function<'a, 'b>(
     let mut ops = Array::new(arena, temp_ops.len());
     unsafe {
         ops.extend_from_slice_unchecked(temp_ops.as_slice());
-        // temp_ops
-        //     .as_ptr()
-        //     .copy_to_nonoverlapping(ops.as_mut_ptr(), temp_ops.len());
     }
     // for op in ops.iter_mut() {
     //     let mut decoded_asm = String::new(arena, 1024);

@@ -1,8 +1,10 @@
 use crate::arena::Arena;
+use crate::arena::scratch::scratch_arena;
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
+use crate::memory_viewer::MemoryViewer;
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
@@ -212,132 +214,140 @@ impl eframe::App for TemplateApp {
         egui::SidePanel::right("RightPanel")
             .resizable(true)
             .show(ctx, |ui| {
-                if !self.file_entries.is_empty() {
-                    if let Some(data_provider) = &mut self.file_entries[0].data_provider {
-                        self.functions_explorer
-                            .show_functions_table(ui, data_provider);
+                let data = [
+                    48u8, 0u8, 0u8, 65u8, 0u8, 0u8, 0u8, 0u8, 0u8, 58u8, 0u8, 0u8, 75u8, 0u8, 0u8,
+                    0u8, 0u8, 0u8,
+                ];
 
-                        if let Some(idx) = self.functions_explorer.selected_row {
-                            let (
-                                mut asm_row_data,
-                                op_start_idx,
-                                ops_addresses,
-                                first_selected_address,
-                            ): (Vec<RowData>, usize, Vec<u64>, u64) = {
-                                let mut row_data = Vec::new();
-                                let mut ops_addresses = Vec::new();
-                                for (index, local) in
-                                    data_provider.get_locals_at(idx).iter().enumerate()
-                                {
-                                    row_data.push(RowData {
-                                        cells: vec![
-                                            format!("{:?}", index),
-                                            String::from(local.as_str()),
-                                        ],
-                                        bg_color: None,
-                                        tooltip: None,
-                                    });
-                                }
+                let scratch = scratch_arena(&[]);
+                MemoryViewer::show(&scratch, ui, &data);
 
-                                for op in data_provider.get_ops_at(idx).iter() {
-                                    row_data.push(RowData {
-                                        cells: vec![
-                                            format!("0x{:04x}", op.address),
-                                            String::from(op.op.as_str()),
-                                        ],
-                                        bg_color: None,
-                                        tooltip: None,
-                                    });
-                                    ops_addresses.push(op.address);
-                                }
+                // if !self.file_entries.is_empty() {
+                //     if let Some(data_provider) = &mut self.file_entries[0].data_provider {
+                //         self.functions_explorer
+                //             .show_functions_table(ui, data_provider);
 
-                                (
-                                    row_data,
-                                    data_provider.get_locals_at(idx).len(),
-                                    ops_addresses,
-                                    data_provider.get_start_addr(idx),
-                                )
-                            };
+                //         if let Some(idx) = self.functions_explorer.selected_row {
+                //             let (
+                //                 mut asm_row_data,
+                //                 op_start_idx,
+                //                 ops_addresses,
+                //                 first_selected_address,
+                //             ): (Vec<RowData>, usize, Vec<u64>, u64) = {
+                //                 let mut row_data = Vec::new();
+                //                 let mut ops_addresses = Vec::new();
+                //                 for (index, local) in
+                //                     data_provider.get_locals_at(idx).iter().enumerate()
+                //                 {
+                //                     row_data.push(RowData {
+                //                         cells: vec![
+                //                             format!("{:?}", index),
+                //                             String::from(local.as_str()),
+                //                         ],
+                //                         bg_color: None,
+                //                         tooltip: None,
+                //                     });
+                //                 }
 
-                            let mut code_rows = Vec::new();
-                            let mut current_color_idx = 0;
-                            let mut colors_for_source: HashMap<u32, egui::Color32> =
-                                HashMap::default();
-                            const COLORS: [egui::Color32; 4] = [
-                                egui::Color32::LIGHT_RED,
-                                egui::Color32::LIGHT_GREEN,
-                                egui::Color32::LIGHT_BLUE,
-                                egui::Color32::LIGHT_GRAY,
-                            ];
+                //                 for op in data_provider.get_ops_at(idx).iter() {
+                //                     row_data.push(RowData {
+                //                         cells: vec![
+                //                             format!("0x{:04x}", op.address),
+                //                             String::from(op.op.as_str()),
+                //                         ],
+                //                         bg_color: None,
+                //                         tooltip: None,
+                //                     });
+                //                     ops_addresses.push(op.address);
+                //                 }
 
-                            let mut selected_file_path = "";
-                            if let Some(location) =
-                                data_provider.get_location_for_addr(first_selected_address)
-                            {
-                                selected_file_path = location.file.as_str();
-                                if let Ok(source_code) = fs::read_to_string(selected_file_path) {
-                                    for (idx, line) in source_code.lines().enumerate() {
-                                        code_rows.push(RowData {
-                                            cells: vec![format!("{:?}", idx), line.to_string()],
-                                            bg_color: None,
-                                            tooltip: None,
-                                        });
-                                    }
+                //                 (
+                //                     row_data,
+                //                     data_provider.get_locals_at(idx).len(),
+                //                     ops_addresses,
+                //                     data_provider.get_start_addr(idx),
+                //                 )
+                //             };
 
-                                    for (idx, address) in ops_addresses.iter().enumerate() {
-                                        if let Some(location) =
-                                            data_provider.get_location_for_addr(*address)
-                                        {
-                                            let color = colors_for_source
-                                                .entry(location.line)
-                                                .or_insert_with(|| {
-                                                    current_color_idx += 1;
-                                                    COLORS[current_color_idx % COLORS.len()]
-                                                });
-                                            // code_viewer.highlight_line(location.line as usize, *color);
-                                            if location.file.as_str() == selected_file_path {
-                                                code_rows[location.line as usize].bg_color =
-                                                    Some(*color);
-                                            }
+                //             let mut code_rows = Vec::new();
+                //             let mut current_color_idx = 0;
+                //             let mut colors_for_source: HashMap<u32, egui::Color32> =
+                //                 HashMap::default();
+                //             const COLORS: [egui::Color32; 4] = [
+                //                 egui::Color32::LIGHT_RED,
+                //                 egui::Color32::LIGHT_GREEN,
+                //                 egui::Color32::LIGHT_BLUE,
+                //                 egui::Color32::LIGHT_GRAY,
+                //             ];
 
-                                            let asm_row_data =
-                                                &mut asm_row_data[op_start_idx + idx];
-                                            asm_row_data.bg_color = Some(*color);
-                                            asm_row_data.tooltip = Some(format!(
-                                                "File: {}\nLine: {}",
-                                                location.file.as_str(),
-                                                location.line
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
+                //             let mut selected_file_path = "";
+                //             if let Some(location) =
+                //                 data_provider.get_location_for_addr(first_selected_address)
+                //             {
+                //                 selected_file_path = location.file.as_str();
+                //                 if let Ok(source_code) = fs::read_to_string(selected_file_path) {
+                //                     for (idx, line) in source_code.lines().enumerate() {
+                //                         code_rows.push(RowData {
+                //                             cells: vec![format!("{:?}", idx), line.to_string()],
+                //                             bg_color: None,
+                //                             tooltip: None,
+                //                         });
+                //                     }
 
-                            self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
-                                match &mut tab.contents {
-                                    TabContent::SourceCodeViewer {
-                                        code_viewer,
-                                        file_path,
-                                        first_address,
-                                    } => {
-                                        if *first_address != first_selected_address {
-                                            *first_address = first_selected_address;
-                                            *file_path = String::from(selected_file_path);
+                //                     for (idx, address) in ops_addresses.iter().enumerate() {
+                //                         if let Some(location) =
+                //                             data_provider.get_location_for_addr(*address)
+                //                         {
+                //                             let color = colors_for_source
+                //                                 .entry(location.line)
+                //                                 .or_insert_with(|| {
+                //                                     current_color_idx += 1;
+                //                                     COLORS[current_color_idx % COLORS.len()]
+                //                                 });
+                //                             // code_viewer.highlight_line(location.line as usize, *color);
+                //                             if location.file.as_str() == selected_file_path {
+                //                                 code_rows[location.line as usize].bg_color =
+                //                                     Some(*color);
+                //                             }
 
-                                            code_viewer.set_row_data(code_rows.clone());
-                                        }
-                                    }
-                                    TabContent::AssemblyViewer { asm, first_address } => {
-                                        if *first_address != first_selected_address {
-                                            *first_address = first_selected_address;
-                                            asm.set_row_data(asm_row_data.clone());
-                                        }
-                                    }
-                                }
-                            });
-                        }
-                    }
-                }
+                //                             let asm_row_data =
+                //                                 &mut asm_row_data[op_start_idx + idx];
+                //                             asm_row_data.bg_color = Some(*color);
+                //                             asm_row_data.tooltip = Some(format!(
+                //                                 "File: {}\nLine: {}",
+                //                                 location.file.as_str(),
+                //                                 location.line
+                //                             ));
+                //                         }
+                //                     }
+                //                 }
+                //             }
+
+                //             self.tree.iter_all_tabs_mut().for_each(|(_, tab)| {
+                //                 match &mut tab.contents {
+                //                     TabContent::SourceCodeViewer {
+                //                         code_viewer,
+                //                         file_path,
+                //                         first_address,
+                //                     } => {
+                //                         if *first_address != first_selected_address {
+                //                             *first_address = first_selected_address;
+                //                             *file_path = String::from(selected_file_path);
+
+                //                             code_viewer.set_row_data(code_rows.clone());
+                //                         }
+                //                     }
+                //                     TabContent::AssemblyViewer { asm, first_address } => {
+                //                         if *first_address != first_selected_address {
+                //                             *first_address = first_selected_address;
+                //                             asm.set_row_data(asm_row_data.clone());
+                //                         }
+                //                     }
+                //                 }
+                //             });
+                //         }
+                //     }
+                // }
             });
 
         egui::SidePanel::left("LeftPanel")
