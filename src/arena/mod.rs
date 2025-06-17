@@ -1,4 +1,5 @@
 use std::{
+    alloc::Allocator,
     cell::Cell,
     mem::MaybeUninit,
     ptr::{NonNull, slice_from_raw_parts_mut},
@@ -123,8 +124,10 @@ impl Arena {
     }
 
     pub fn new(capacity: usize) -> Self {
-        let capacity =
-            (usize::max(capacity, 1) + ALLOCATION_CHUNCK_SIZE - 1) & !(ALLOCATION_CHUNCK_SIZE - 1);
+        // debug_assert!(capacity != 0);
+
+        let capacity = unsafe { usize::unchecked_add(capacity, ALLOCATION_CHUNCK_SIZE - 1) }
+            & !(ALLOCATION_CHUNCK_SIZE - 1);
 
         let buffer = unsafe { memory::virtual_reserve(capacity) };
 
@@ -174,7 +177,7 @@ impl Arena {
         let size = std::mem::size_of::<T>();
         let align = std::mem::align_of::<T>();
 
-        let ptr = self.alloc_raw(size, align).as_ptr();
+        let ptr = self.alloc_raw(size, align).cast::<u8>().as_ptr();
         unsafe {
             std::ptr::write_bytes(ptr, 0, size);
         }
@@ -186,7 +189,7 @@ impl Arena {
         let size = std::mem::size_of::<T>();
         let align = std::mem::align_of::<T>();
 
-        let ptr = self.alloc_raw(size * len, align).as_ptr();
+        let ptr = self.alloc_raw(size * len, align).cast::<u8>().as_ptr();
         unsafe {
             std::ptr::write_bytes(ptr, 0, size * len);
         }
@@ -195,7 +198,7 @@ impl Arena {
     }
 
     #[track_caller]
-    pub fn alloc_raw(&self, size: usize, align: usize) -> NonNull<u8> {
+    pub fn alloc_raw(&self, size: usize, align: usize) -> NonNull<[u8]> {
         assert_pow_of_2!(align);
 
         let mut start = self.offset.get();
@@ -222,7 +225,7 @@ impl Arena {
         }
 
         self.offset.set(end);
-        unsafe { self.buffer.add(start) }
+        unsafe { NonNull::slice_from_raw_parts(self.buffer.add(start), end - start) }
     }
 
     pub fn shrink(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
@@ -231,6 +234,20 @@ impl Arena {
         // It only makes sense to shrink the last allocation.
         // The arena doesn't handle deallocation and it will
         // not re-allocate any released memory in between two allocations
+        if unsafe { ptr.add(old_size) == self.buffer.add(self.offset.get()) } {
+            self.offset.set(self.offset.get() - (old_size - new_size));
+        } else {
+            debug_assert!(
+                false,
+                "Attempting to shrink memory that was not the last allocated"
+            );
+        }
+    }
+
+    pub fn grow(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
+        debug_assert!(old_size <= new_size);
+
+        // If it's
         if unsafe { ptr.add(old_size) == self.buffer.add(self.offset.get()) } {
             self.offset.set(self.offset.get() - (old_size - new_size));
         } else {
@@ -257,6 +274,136 @@ impl Arena {
     /// can still point to accessible memory, so be careful!!.
     pub(super) unsafe fn reset(&self, offset: usize) {
         self.offset.set(offset);
+    }
+}
+
+unsafe impl Allocator for Arena {
+    fn allocate(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        Ok(self.alloc_raw(layout.size(), layout.align()))
+    }
+
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: std::alloc::Layout) {
+        // No-op
+    }
+
+    fn allocate_zeroed(
+        &self,
+        layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        let ptr = self.allocate(layout)?;
+        // SAFETY: `alloc` returns a valid memory block
+        unsafe { ptr.cast::<u8>().as_ptr().write_bytes(0, layout.size()) }
+        Ok(ptr)
+    }
+
+    unsafe fn grow(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: std::alloc::Layout,
+        new_layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        std::debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
+        );
+
+        // Handle the case where we are growing the last allocation.
+        if unsafe { ptr.add(old_layout.size()) == self.buffer.add(self.offset.get()) } {
+            self.offset
+                .set(self.offset.get() + (new_layout.size() - old_layout.size()));
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        } else {
+            // We want to completely descourage this from happening
+            debug_assert!(
+                false,
+                "Attempting to grow memory that was not the last allocated"
+            );
+
+            let new_ptr = self.allocate(new_layout)?.cast::<u8>();
+
+            // SAFETY: because `new_layout.size()` must be greater than or equal to
+            // `old_layout.size()`, both the old and new memory allocation are valid for reads and
+            // writes for `old_layout.size()` bytes. Also, because the old allocation wasn't yet
+            // deallocated, it cannot overlap `new_ptr`. Thus, the call to `copy_nonoverlapping` is
+            // safe. The safety contract for `dealloc` must be upheld by the caller.
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), old_layout.size());
+                self.deallocate(ptr, old_layout);
+            }
+
+            Ok(NonNull::slice_from_raw_parts(new_ptr, new_layout.size()))
+        }
+    }
+
+    unsafe fn grow_zeroed(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: std::alloc::Layout,
+        new_layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        std::debug_assert!(
+            new_layout.size() >= old_layout.size(),
+            "`new_layout.size()` must be greater than or equal to `old_layout.size()`"
+        );
+
+        // Handle the case where we are growing the last allocation.
+        if unsafe { ptr.add(old_layout.size()) == self.buffer.add(self.offset.get()) } {
+            self.offset
+                .set(self.offset.get() + (new_layout.size() - old_layout.size()));
+
+            unsafe {
+                ptr.add(old_layout.size())
+                    .write_bytes(0, new_layout.size() - old_layout.size());
+            }
+
+            return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
+        } else {
+            // We want to completely descourage this from happening
+            debug_assert!(
+                false,
+                "Attempting to grow memory that was not the last allocated"
+            );
+
+            let new_ptr = self.allocate_zeroed(new_layout)?.cast::<u8>();
+
+            // SAFETY: because `new_layout.size()` must be greater than or equal to
+            // `old_layout.size()`, both the old and new memory allocation are valid for reads and
+            // writes for `old_layout.size()` bytes. Also, because the old allocation wasn't yet
+            // deallocated, it cannot overlap `new_ptr`. Thus, the call to `copy_nonoverlapping` is
+            // safe. The safety contract for `dealloc` must be upheld by the caller.
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr(), old_layout.size());
+                self.deallocate(ptr, old_layout);
+            }
+
+            return Ok(NonNull::slice_from_raw_parts(new_ptr, new_layout.size()));
+        }
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: std::alloc::Layout,
+        new_layout: std::alloc::Layout,
+    ) -> Result<NonNull<[u8]>, std::alloc::AllocError> {
+        std::debug_assert!(
+            new_layout.size() <= old_layout.size(),
+            "`new_layout.size()` must be smaller than or equal to `old_layout.size()`"
+        );
+
+        self.shrink(ptr, old_layout.size(), new_layout.size());
+
+        Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()))
+    }
+
+    fn by_ref(&self) -> &Self
+    where
+        Self: Sized,
+    {
+        self
     }
 }
 

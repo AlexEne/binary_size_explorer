@@ -2,9 +2,10 @@ use crate::arena::Arena;
 use crate::arena::scratch::scratch_arena;
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
-use crate::data_provider_twiggy::DataProviderTwiggy;
+use crate::data_provider_twiggy::{DataProviderTwiggy, SectionType};
 use crate::functions_explorer::FunctionsExplorer;
 use crate::memory_viewer::MemoryViewer;
+use egui::{ScrollArea, Vec2b};
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
@@ -214,13 +215,49 @@ impl eframe::App for TemplateApp {
         egui::SidePanel::right("RightPanel")
             .resizable(true)
             .show(ctx, |ui| {
-                let data = [
-                    48u8, 0u8, 0u8, 65u8, 0u8, 0u8, 0u8, 0u8, 0u8, 58u8, 0u8, 0u8, 75u8, 0u8, 0u8,
-                    0u8, 0u8, 0u8,
-                ];
+                // let data = [
+                //     48u8, 0u8, 0u8, 65u8, 0u8, 0u8, 0u8, 0u8, 0u8, 58u8, 0u8, 0u8, 75u8, 0u8, 0u8,
+                //     0u8, 0u8, 0u8,
+                // ];
 
-                let scratch = scratch_arena(&[]);
-                MemoryViewer::show(&scratch, ui, &data);
+                // let scratch = scratch_arena(&[]);
+                // MemoryViewer::show(&scratch, ui, &data);
+
+                if !self.file_entries.is_empty() {
+                    if let Some(data_provider) = &mut self.file_entries[0].data_provider {
+                        ScrollArea::both().auto_shrink(Vec2b::FALSE).show(ui, |ui| {
+                            for section_idx in 0..data_provider.sections.len() {
+                                let section = data_provider.sections[section_idx];
+
+                                let name = match section.ty {
+                                    SectionType::TypeSection => "TypeSection",
+                                    SectionType::ImportSection => "ImportSection",
+                                    SectionType::FunctionSection => "FunctionSection",
+                                    SectionType::TableSection => "TableSection",
+                                    SectionType::MemorySection => "MemorySection",
+                                    SectionType::TagSection => "TagSection",
+                                    SectionType::GlobalSection => "GlobalSection",
+                                    SectionType::ExportSection => "ExportSection",
+                                    SectionType::StartSection => "StartSection",
+                                    SectionType::ElementSection => "ElementSection",
+                                    SectionType::DataCountSection => "DataCountSection",
+                                    SectionType::DataSection => "DataSection",
+                                    SectionType::Custom => "Custom",
+                                };
+
+                                ui.collapsing(name, |ui| {
+                                    let scratch = scratch_arena(&[]);
+                                    MemoryViewer::show(
+                                        &scratch,
+                                        ui,
+                                        &data_provider.wasm_data
+                                            [section.offset..(section.offset + section.length)],
+                                    );
+                                });
+                            }
+                        });
+                    }
+                }
 
                 // if !self.file_entries.is_empty() {
                 //     if let Some(data_provider) = &mut self.file_entries[0].data_provider {

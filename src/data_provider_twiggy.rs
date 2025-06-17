@@ -1,5 +1,5 @@
 use crate::{
-    arena::{self, Arena, array::Array, scratch::scratch_arena, string::String},
+    arena::{Arena, array::Array, scratch::scratch_arena, string::String},
     data_provider::{
         CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
@@ -7,15 +7,39 @@ use crate::{
     gui::tree_view::{TreeItemState, TreeState},
 };
 use addr2line::LookupResult;
-use egui::ahash::{HashMap, HashMapExt};
+use hashbrown::{DefaultHashBuilder, HashMap};
+use std::ops::Range;
 use std::{
     fmt::Write,
     hash::{DefaultHasher, Hash, Hasher},
 };
-use std::{ops::Range, time::Instant};
-use twiggy_opt::CommonCliOptions;
 use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::BinaryReader;
+
+#[derive(Clone, Copy)]
+pub enum SectionType {
+    TypeSection,
+    ImportSection,
+    FunctionSection,
+    TableSection,
+    MemorySection,
+    TagSection,
+    GlobalSection,
+    ExportSection,
+    StartSection,
+    ElementSection,
+    DataCountSection,
+    DataSection,
+    Custom,
+}
+
+#[derive(Clone, Copy)]
+pub struct Section<'a> {
+    pub ty: SectionType,
+    pub name: &'a str,
+    pub offset: usize,
+    pub length: usize,
+}
 
 // #[derive(Clone, Copy)]
 pub struct FunctionData<'a> {
@@ -31,13 +55,16 @@ pub struct DataProviderTwiggy<'a> {
     pub total_percent: f32,
 
     // filter: Filter<'a>,
-    pub top_view_items_filtered: Vec<usize>,
+    pub top_view_items_filtered: Vec<usize, &'a Arena>,
     pub dominator_view_tree_state: TreeState,
+
+    pub wasm_data: Vec<u8>,
+    pub sections: Array<'a, Section<'a>>,
 
     code_locations: Array<'a, CodeLocation<'a>>,
     // This is a map of source file / line locations -> Assembly
-    locations_reverse_map: HashMap<u64, Vec<u64>>,
-    addr_to_location: HashMap<u64, usize>,
+    locations_reverse_map: HashMap<u64, Vec<u64>, DefaultHashBuilder, &'a Arena>,
+    addr_to_location: HashMap<u64, usize, DefaultHashBuilder, &'a Arena>,
 }
 
 impl<'a> DataProviderTwiggy<'a> {
@@ -47,6 +74,128 @@ impl<'a> DataProviderTwiggy<'a> {
 
         let mut items = twiggy_parser::parse(&wasm_data).unwrap();
         let mut id_to_idx = HashMap::new();
+
+        let mut parser = wasmparser::Parser::new(0);
+
+        let mut sections = Array::new(arena, 128);
+        let mut offset = 0;
+        while offset < wasm_data.len() {
+            let chunck = parser
+                .parse(&wasm_data[offset..], true)
+                .expect("Failed to parse wasm data");
+            match chunck {
+                wasmparser::Chunk::Parsed { consumed, payload } => {
+                    match payload {
+                        // wasmparser::Payload::Version {
+                        //     num,
+                        //     encoding,
+                        //     range,
+                        // } => todo!(),
+                        wasmparser::Payload::TypeSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::TypeSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::ImportSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::ImportSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::FunctionSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::FunctionSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::TableSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::TableSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::MemorySection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::MemorySection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::TagSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::TagSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::GlobalSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::GlobalSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::ExportSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::ExportSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::StartSection { func, range } => {
+                            sections.push(Section {
+                                ty: SectionType::StartSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::ElementSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::ElementSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::DataCountSection { count, range } => {
+                            sections.push(Section {
+                                ty: SectionType::DataCountSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+                        wasmparser::Payload::DataSection(section_limited) => {
+                            sections.push(Section {
+                                ty: SectionType::DataSection,
+                                name: "",
+                                offset,
+                                length: consumed,
+                            })
+                        }
+
+                        _ => {}
+                    }
+                    offset += consumed;
+                }
+                wasmparser::Chunk::NeedMoreData(_) => panic!("Wasm data is incomplete"),
+            }
+        }
+        sections.shrink_to_fit();
 
         items.compute_retained_sizes();
 
@@ -136,9 +285,11 @@ impl<'a> DataProviderTwiggy<'a> {
         // Compute code locations
         let mut code_locations = Array::new(arena, code_location_count);
         // CL index -> addresses
-        let mut locations_reverse_map: HashMap<u64, Vec<u64>> = HashMap::default();
+        let mut locations_reverse_map: HashMap<u64, Vec<u64>, _, &'a Arena> =
+            HashMap::with_capacity_in(code_location_count, arena);
         // Add -> CL index
-        let mut addr_to_location: HashMap<u64, usize> = HashMap::default();
+        let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
+            HashMap::with_capacity_in(code_location_count, arena);
 
         for raw_data_item in raw_data.iter() {
             let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
@@ -201,8 +352,8 @@ impl<'a> DataProviderTwiggy<'a> {
                 // Order as asc because children will be processed
                 // in the reverse order
                 children_scratch.sort_by(|a, b| {
-                    let a: usize = id_to_idx.get(&a).copied().unwrap_or(0);
-                    let b: usize = id_to_idx.get(&b).copied().unwrap_or(0);
+                    let a: usize = id_to_idx.get(a).copied().unwrap_or(0);
+                    let b: usize = id_to_idx.get(b).copied().unwrap_or(0);
                     raw_data[a]
                         .function_property
                         .retained_size_bytes
@@ -221,7 +372,7 @@ impl<'a> DataProviderTwiggy<'a> {
             tree_items[parent].descendants_count += descendants_count + 1;
         }
 
-        let top_view_items_filtered = Vec::with_capacity(raw_data.len());
+        let top_view_items_filtered = Vec::with_capacity_in(raw_data.len(), arena);
         let dominator_view_tree_state = TreeState::new(tree_items);
 
         let mut provider = DataProviderTwiggy {
@@ -231,6 +382,8 @@ impl<'a> DataProviderTwiggy<'a> {
             total_percent: 0.0,
             top_view_items_filtered,
             dominator_view_tree_state,
+            wasm_data,
+            sections,
             code_locations,
             locations_reverse_map,
             addr_to_location,

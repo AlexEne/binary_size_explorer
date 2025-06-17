@@ -38,7 +38,11 @@ impl<'a, T> Array<'a, T> {
         // The capacity is never less than the length, and there's nothing to do when
         // they are equal.
         if self.capacity > self.len {
-            self.arena.shrink(self.buf.cast(), self.capacity, self.len);
+            self.arena.shrink(
+                self.buf.cast(),
+                self.capacity * std::mem::size_of::<T>(),
+                self.len * std::mem::size_of::<T>(),
+            );
             self.capacity = self.len();
         }
     }

@@ -1,6 +1,7 @@
 use egui::{
-    Align, Color32, ComboBox, Direction, Id, Label, Layout, Rect, Response, RichText, Sense, Shape,
-    Stroke, StrokeKind, TextStyle, TextWrapMode, Widget, WidgetText, epaint::RectShape, pos2, vec2,
+    Align, Color32, ComboBox, Direction, Id, Label, Layout, Rect, Response, RichText, ScrollArea,
+    Sense, Shape, Stroke, StrokeKind, TextStyle, TextWrapMode, Widget, WidgetText,
+    epaint::RectShape, pos2, vec2,
 };
 use egui_extras::{Column, Table, TableBuilder};
 
@@ -35,6 +36,14 @@ impl MemoryViewer {
 
         let table = TableBuilder::new(ui)
             .column(Column::exact(50.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
+            .column(Column::exact(30.0))
             .column(Column::exact(30.0))
             .column(Column::exact(30.0))
             .column(Column::exact(30.0))
@@ -96,25 +105,57 @@ impl MemoryViewer {
                 });
 
                 header.col(|ui| {
+                    ui.strong("8");
+                });
+
+                header.col(|ui| {
+                    ui.strong("9");
+                });
+
+                header.col(|ui| {
+                    ui.strong("A");
+                });
+
+                header.col(|ui| {
+                    ui.strong("B");
+                });
+
+                header.col(|ui| {
+                    ui.strong("C");
+                });
+
+                header.col(|ui| {
+                    ui.strong("D");
+                });
+
+                header.col(|ui| {
+                    ui.strong("E");
+                });
+
+                header.col(|ui| {
+                    ui.strong("F");
+                });
+
+                header.col(|ui| {
                     ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                         ui.strong("ASCII");
                     });
                 });
             })
             .body(|body| {
-                let mut offset = 0;
                 let mut buffer = String::new(arena, 16);
 
-                body.rows(18.0, (data.len() + 7) / 8, |mut row| {
+                body.rows(18.0, (data.len() + 15) / 16, |mut row| {
                     row.col(|ui| {
                         ui.monospace("0x0000");
                     });
 
-                    let len = (data.len() - offset).min(8);
+                    let offset = row.index() * 16;
+                    let len = (data.len() - offset).min(16);
                     let data = &data[offset..(offset + len)];
                     let mut selected_idx: i8 = -1;
 
-                    for i in 0..8 {
+                    for i in 0..16 {
                         row.col(|ui| {
                             let byte = data.get(i).copied().unwrap_or(0);
 
@@ -131,8 +172,6 @@ impl MemoryViewer {
                             }
                         });
                     }
-
-                    offset += len;
 
                     row.col(|ui| {
                         buffer.clear();
@@ -167,10 +206,6 @@ impl MemoryViewer {
                     });
                 });
             });
-
-        // if selected_idx > 0 {
-        //     println!("Selected_idx {}", selected_idx)
-        // }
     }
 
     fn show_cell(

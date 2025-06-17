@@ -76,6 +76,7 @@ struct State {
 // When compiling natively:
 fn main() -> eframe::Result {
     // let mut v = Vec::new();
+    // v.remove(index)
     // v.shrink_to_fit()
     //     String::from_str(s)
     // let mut s = String::new();
