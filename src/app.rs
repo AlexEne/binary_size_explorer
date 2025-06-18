@@ -4,6 +4,8 @@ use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
+use crate::memory_viewer::MemoryViewer;
+use egui::{CollapsingHeader, ScrollArea, Vec2b};
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
@@ -26,9 +28,12 @@ pub struct FileEntry {
     pub arena: Arena,
 }
 
-struct TabViewer {}
+struct TabViewer<'a> {
+    /// All the file entries currently loaded.
+    file_entries: &'a Vec<FileEntry>,
+}
 
-impl egui_dock::TabViewer for TabViewer {
+impl egui_dock::TabViewer for TabViewer<'_> {
     type Tab = DockTab;
 
     fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
@@ -43,6 +48,36 @@ impl egui_dock::TabViewer for TabViewer {
 
             TabContent::AssemblyViewer { asm, .. } => {
                 asm.show_code_as_table(ui);
+            }
+
+            TabContent::RawBinaryViewer { file_index } => {
+                if let Some(data_provider) = &self.file_entries[*file_index].data_provider {
+                    MemoryViewer::show(ui, &data_provider.wasm_data);
+                }
+            }
+
+            TabContent::SectionsBinaryViewer { file_index } => {
+                if let Some(data_provider) = &self.file_entries[*file_index].data_provider {
+                    ScrollArea::both().auto_shrink(Vec2b::FALSE).show(ui, |ui| {
+                        for (idx, section) in data_provider.sections.iter().enumerate() {
+                            let section_name = section.name;
+                            let section_raw_data = &data_provider.wasm_data
+                                [section.offset..(section.offset + section.length)];
+
+                            let header_response = CollapsingHeader::new(section_name)
+                                .id_salt(idx)
+                                .show(ui, |ui| {
+                                    MemoryViewer::show(ui, section_raw_data);
+                                })
+                                .header_response;
+
+                            if header_response.hovered() {
+                                header_response
+                                    .show_tooltip_text(format!("Size: {}", section.length));
+                            }
+                        }
+                    });
+                }
             }
         }
     }
@@ -74,6 +109,12 @@ enum TabContent {
         asm: CodeViewer,
         first_address: u64,
     },
+    RawBinaryViewer {
+        file_index: usize,
+    },
+    SectionsBinaryViewer {
+        file_index: usize,
+    },
 }
 
 pub struct TemplateApp {
@@ -104,22 +145,7 @@ enum AnalyzerState {
 
 impl Default for TemplateApp {
     fn default() -> Self {
-        let mut tree = egui_dock::DockState::new(vec![DockTab::new(
-            "WASM",
-            TabContent::AssemblyViewer {
-                asm: CodeViewer::for_language("wasm"),
-                first_address: 0,
-            },
-        )]);
-
-        tree.add_window(vec![DockTab::new(
-            "Source",
-            TabContent::SourceCodeViewer {
-                code_viewer: CodeViewer::for_language("rust"),
-                file_path: "".into(),
-                first_address: 0,
-            },
-        )]);
+        let tree = egui_dock::DockState::new(vec![]);
 
         Self {
             file_dialog: FileDialog::new(),
@@ -179,6 +205,22 @@ impl eframe::App for TemplateApp {
                     }
                     if ui.button("Quit").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+
+                ui.menu_button("Views", |ui| {
+                    if ui.button("Raw Binary").clicked() {
+                        self.tree.main_surface_mut().push_to_first_leaf(DockTab {
+                            title: String::from("Raw Binary"),
+                            contents: TabContent::RawBinaryViewer { file_index: 0 },
+                        });
+                    }
+
+                    if ui.button("Sections Binary").clicked() {
+                        self.tree.main_surface_mut().push_to_first_leaf(DockTab {
+                            title: String::from("Sections Binary"),
+                            contents: TabContent::SectionsBinaryViewer { file_index: 0 },
+                        });
                     }
                 });
 
@@ -333,6 +375,7 @@ impl eframe::App for TemplateApp {
                                             asm.set_row_data(asm_row_data.clone());
                                         }
                                     }
+                                    _ => {}
                                 }
                             });
                         }
@@ -354,9 +397,13 @@ impl eframe::App for TemplateApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui_dock::DockArea::new(&mut self.tree)
+            let Self {
+                tree, file_entries, ..
+            } = self;
+
+            egui_dock::DockArea::new(tree)
                 .style(egui_dock::Style::from_egui(ctx.style().as_ref()))
-                .show(ctx, &mut TabViewer {});
+                .show(ctx, &mut TabViewer { file_entries });
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 egui::warn_if_debug_build(ui);
@@ -404,6 +451,18 @@ impl TemplateApp {
                                 code_viewer: CodeViewer::for_language("rust"),
                                 file_path: "".into(),
                                 first_address: 0, //address that took us to that path.
+                            },
+                        ),
+                        DockTab::new(
+                            "Raw Binary",
+                            TabContent::RawBinaryViewer {
+                                file_index: self.file_entries.len() - 1,
+                            },
+                        ),
+                        DockTab::new(
+                            "Sections Binary",
+                            TabContent::SectionsBinaryViewer {
+                                file_index: self.file_entries.len() - 1,
                             },
                         ),
                     ]);

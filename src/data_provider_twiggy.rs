@@ -16,6 +16,33 @@ use std::{ops::Range, time::Instant};
 use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::BinaryReader;
 
+#[derive(Clone, Copy)]
+pub enum SectionType {
+    TypeSection,
+    ImportSection,
+    FunctionSection,
+    TableSection,
+    MemorySection,
+    TagSection,
+    GlobalSection,
+    ExportSection,
+    StartSection,
+    ElementSection,
+    DataCountSection,
+    DataSection,
+    CodeSection,
+    CustomSection,
+    UnknownSection,
+}
+
+#[derive(Clone, Copy)]
+pub struct Section<'a> {
+    pub ty: SectionType,
+    pub name: &'a str,
+    pub offset: usize,
+    pub length: usize,
+}
+
 pub struct FunctionData<'a> {
     pub function_property: FunctionProperty<'a>,
     pub debug_info: FunctionPropertyDebugInfo<'a>,
@@ -33,6 +60,8 @@ pub struct DataProviderTwiggy<'a> {
 
     pub top_view_items_filtered: Vec<usize, &'a Arena>,
     pub dominator_view_tree_state: TreeState<'a>,
+
+    pub sections: Array<'a, Section<'a>>,
 
     /// The array of code locations loaded from the file.
     code_locations: Array<'a, CodeLocation<'a>>,
@@ -53,6 +82,118 @@ impl<'a> DataProviderTwiggy<'a> {
         let mut id_to_idx = HashMap::new();
 
         items.compute_retained_sizes();
+
+        let mut parser = wasmparser::Parser::new(0);
+
+        let mut sections = Array::new(arena, 32 * 1024);
+        let mut offset = 0;
+        while offset < wasm_data.len() {
+            let chunck = parser
+                .parse(&wasm_data[offset..], true)
+                .expect("Failed to parse wasm data");
+            match chunck {
+                wasmparser::Chunk::Parsed { consumed, payload } => {
+                    match payload {
+                        wasmparser::Payload::TypeSection(_) => sections.push(Section {
+                            ty: SectionType::TypeSection,
+                            name: "Type Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::ImportSection(_) => sections.push(Section {
+                            ty: SectionType::ImportSection,
+                            name: "Import Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::FunctionSection(_) => sections.push(Section {
+                            ty: SectionType::FunctionSection,
+                            name: "Function Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::TableSection(_) => sections.push(Section {
+                            ty: SectionType::TableSection,
+                            name: "Table Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::MemorySection(_) => sections.push(Section {
+                            ty: SectionType::MemorySection,
+                            name: "Memory Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::TagSection(_) => sections.push(Section {
+                            ty: SectionType::TagSection,
+                            name: "Tag Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::GlobalSection(_) => sections.push(Section {
+                            ty: SectionType::GlobalSection,
+                            name: "Global Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::ExportSection(_) => sections.push(Section {
+                            ty: SectionType::ExportSection,
+                            name: "Export Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::StartSection { .. } => sections.push(Section {
+                            ty: SectionType::StartSection,
+                            name: "Start Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::ElementSection(_) => sections.push(Section {
+                            ty: SectionType::ElementSection,
+                            name: "Element Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::DataCountSection { .. } => sections.push(Section {
+                            ty: SectionType::DataCountSection,
+                            name: "DataCount Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::DataSection(_) => sections.push(Section {
+                            ty: SectionType::DataSection,
+                            name: "Data Section",
+                            offset,
+                            length: consumed,
+                        }),
+
+                        wasmparser::Payload::CodeSectionEntry(_) => sections.push(Section {
+                            ty: SectionType::CodeSection,
+                            name: "Code Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::CustomSection(_) => sections.push(Section {
+                            ty: SectionType::CustomSection,
+                            name: "Custom Section",
+                            offset,
+                            length: consumed,
+                        }),
+                        wasmparser::Payload::UnknownSection { .. } => sections.push(Section {
+                            ty: SectionType::UnknownSection,
+                            name: "Unknown Section",
+                            offset,
+                            length: consumed,
+                        }),
+
+                        _ => {}
+                    }
+                    offset += consumed;
+                }
+                wasmparser::Chunk::NeedMoreData(_) => panic!("Wasm data is incomplete"),
+            }
+        }
+        sections.shrink_to_fit();
 
         let ignore_item_by_name = |name: &str| -> bool {
             name.starts_with("custom section '.debug_") || name == "\"function names\" subsection"
@@ -235,6 +376,7 @@ impl<'a> DataProviderTwiggy<'a> {
             total_percent: 0.0,
             top_view_items_filtered,
             dominator_view_tree_state,
+            sections,
             code_locations,
             locations_reverse_map,
             addr_to_location,

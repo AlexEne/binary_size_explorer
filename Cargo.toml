@@ -1,7 +1,10 @@
 [package]
 name = "binary_size_explorer"
 version = "0.1.0"
-authors = ["Alexandru Ene <alex.ene0x11@gmail.com>"]
+authors = [
+    "Alexandru Ene <alex.ene0x11@gmail.com>",
+    "Bruno Gouveia <gouveia.bhg@gmail.com>",
+]
 license = "MIT OR Apache-2.0"
 edition = "2024"
 
