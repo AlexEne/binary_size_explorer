@@ -1,9 +1,9 @@
-use std::usize;
-
 use egui::{
     Align, Color32, Label, Layout, Response, RichText, Shape, Stroke, StrokeKind, Vec2, WidgetText,
 };
 use egui_extras::{Column, TableBuilder};
+use std::fmt::Write;
+use std::usize;
 
 use crate::arena::{scratch::scratch_arena, string::String};
 
@@ -81,13 +81,16 @@ impl MemoryViewer {
                     20.0,
                     (data.len() + CELLS_PER_ROW - 1) / CELLS_PER_ROW,
                     |mut row| {
-                        row.col(|ui| {
-                            ui.monospace("0x00000000");
-                        });
-
                         let offset = row.index() * CELLS_PER_ROW;
                         let len = (data.len() - offset).min(CELLS_PER_ROW);
                         let data = &data[offset..(offset + len)];
+
+                        buffer.clear();
+                        _ = write!(&mut buffer, "{:#08x}", offset);
+
+                        row.col(|ui| {
+                            ui.monospace(buffer.as_str());
+                        });
 
                         row.col(|ui| {
                             for i in 0..CELLS_PER_ROW {
