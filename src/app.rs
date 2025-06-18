@@ -1,3 +1,5 @@
+use crate::arena::Arena;
+use crate::arena::memory::GB;
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
@@ -16,7 +18,12 @@ pub enum FileType {
 pub struct FileEntry {
     pub path: PathBuf,
     pub ty: FileType,
-    pub data_provider: Option<DataProviderTwiggy>,
+
+    pub data_provider: Option<DataProviderTwiggy<'static>>,
+    // TODO: (bruno) We need a better way to have both the arena
+    // and the object allocated with it as part of a struct
+    #[allow(unused)]
+    pub arena: Arena,
 }
 
 struct TabViewer {}
@@ -222,11 +229,11 @@ impl eframe::App for TemplateApp {
                             ): (Vec<RowData>, usize, Vec<u64>, u64) = {
                                 let mut row_data = Vec::new();
                                 let mut ops_addresses = Vec::new();
-                                for (index, local) in
+                                for (index, &local) in
                                     data_provider.get_locals_at(idx).iter().enumerate()
                                 {
                                     row_data.push(RowData {
-                                        cells: vec![format!("{:?}", index), local.clone()],
+                                        cells: vec![format!("{:?}", index), String::from(local)],
                                         bg_color: None,
                                         tooltip: None,
                                     });
@@ -234,7 +241,10 @@ impl eframe::App for TemplateApp {
 
                                 for op in data_provider.get_ops_at(idx).iter() {
                                     row_data.push(RowData {
-                                        cells: vec![format!("0x{:04x}", op.address), op.op.clone()],
+                                        cells: vec![
+                                            format!("0x{:04x}", op.address),
+                                            String::from(op.op),
+                                        ],
                                         bg_color: None,
                                         tooltip: None,
                                     });
@@ -260,12 +270,12 @@ impl eframe::App for TemplateApp {
                                 egui::Color32::LIGHT_GRAY,
                             ];
 
-                            let mut selected_file_path = "".to_string();
+                            let mut selected_file_path = "";
                             if let Some(location) =
                                 data_provider.get_location_for_addr(first_selected_address)
                             {
-                                selected_file_path = location.file.clone();
-                                if let Ok(source_code) = fs::read_to_string(&location.file) {
+                                selected_file_path = location.file.as_str();
+                                if let Ok(source_code) = fs::read_to_string(selected_file_path) {
                                     for (idx, line) in source_code.lines().enumerate() {
                                         code_rows.push(RowData {
                                             cells: vec![format!("{:?}", idx), line.to_string()],
@@ -285,7 +295,7 @@ impl eframe::App for TemplateApp {
                                                     COLORS[current_color_idx % COLORS.len()]
                                                 });
                                             // code_viewer.highlight_line(location.line as usize, *color);
-                                            if location.file == selected_file_path {
+                                            if location.file.as_str() == selected_file_path {
                                                 code_rows[location.line as usize].bg_color =
                                                     Some(*color);
                                             }
@@ -295,7 +305,8 @@ impl eframe::App for TemplateApp {
                                             asm_row_data.bg_color = Some(*color);
                                             asm_row_data.tooltip = Some(format!(
                                                 "File: {}\nLine: {}",
-                                                location.file, location.line
+                                                location.file.as_str(),
+                                                location.line
                                             ));
                                         }
                                     }
@@ -311,7 +322,7 @@ impl eframe::App for TemplateApp {
                                     } => {
                                         if *first_address != first_selected_address {
                                             *first_address = first_selected_address;
-                                            *file_path = selected_file_path.clone();
+                                            *file_path = String::from(selected_file_path);
 
                                             code_viewer.set_row_data(code_rows.clone());
                                         }
@@ -365,11 +376,16 @@ impl TemplateApp {
                 AnalyzerState::AnalyzeWasm { path, .. } => {
                     self.file_entries.clear(); // Not supporting multiple for now.
 
-                    let data_provider = Some(DataProviderTwiggy::from_path(&path));
+                    let arena = Arena::new(16 * GB);
+                    let data_provider = Some(DataProviderTwiggy::from_path(
+                        unsafe { std::mem::transmute(&arena) },
+                        &path,
+                    ));
 
                     self.file_entries.push(FileEntry {
                         path,
                         ty: FileType::Wasm,
+                        arena,
                         data_provider,
                     });
 
@@ -477,13 +493,18 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
 
                             let mut fe = Vec::with_capacity(files.len());
                             for (path, ty) in files {
+                                let arena = Arena::new(16 * GB);
                                 let data_provider = match ty {
-                                    FileType::Wasm => Some(DataProviderTwiggy::from_path(&path)),
+                                    FileType::Wasm => Some(DataProviderTwiggy::from_path(
+                                        unsafe { std::mem::transmute(&arena) },
+                                        &path,
+                                    )),
                                 };
 
                                 fe.push(FileEntry {
                                     path,
                                     ty,
+                                    arena,
                                     data_provider,
                                 });
                             }

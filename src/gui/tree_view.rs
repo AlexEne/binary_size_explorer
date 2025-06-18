@@ -1,5 +1,7 @@
 use egui::{Id, Rect, Response, Sense, Ui, UiBuilder, pos2, scroll_area::ScrollAreaOutput, vec2};
 
+use crate::arena::{Arena, array::Array};
+
 pub struct TreeItemState {
     pub parent: usize,
     pub index: usize,
@@ -10,17 +12,17 @@ pub struct TreeItemState {
     pub indent: u8,
 }
 
-pub struct TreeState {
-    pub nodes: Vec<TreeItemState>,
-    pub indices: Vec<usize>,
+pub struct TreeState<'a> {
+    pub nodes: Array<'a, TreeItemState>,
+    pub indices: Array<'a, usize>,
 
     pub hovered_index: usize,
     pub selected_index: usize,
 }
 
-impl TreeState {
-    pub fn new(mut nodes: Vec<TreeItemState>) -> Self {
-        let indices = Vec::with_capacity(nodes.len());
+impl<'a> TreeState<'a> {
+    pub fn new(arena: &'a Arena, mut nodes: Array<'a, TreeItemState>) -> Self {
+        let indices = Array::new(arena, nodes.len());
 
         if !nodes.is_empty() {
             nodes[0].opened = true;

@@ -1,10 +1,10 @@
 use egui::{
-    Color32, ComboBox, Id, Rect, Response, Sense, Shape, TextStyle, TextWrapMode, WidgetText,
+    Color32, ComboBox, Id, Rect, Sense, Shape, TextStyle, TextWrapMode, WidgetText,
     epaint::RectShape, pos2, vec2,
 };
 
 use crate::{
-    arena::{Arena, array::Array, scratch::scratch_arena},
+    arena::{array::Array, scratch::scratch_arena},
     data_provider::{Filter, FunctionsView, ViewMode},
     data_provider_twiggy::DataProviderTwiggy,
     gui::tree_view::TreeView,
@@ -190,16 +190,11 @@ impl FunctionsExplorer {
                             });
 
                             row.col(|ui| {
-                                ui.label(&filtered_item.raw_name);
+                                ui.label(filtered_item.raw_name);
                             });
 
                             row.col(|ui| {
-                                ui.label(
-                                    filtered_item
-                                        .monomorphization_of
-                                        .as_ref()
-                                        .unwrap_or(&"".to_string()),
-                                );
+                                ui.label(filtered_item.monomorphization_of.unwrap_or(""));
                             });
 
                             if row.response().clicked() {

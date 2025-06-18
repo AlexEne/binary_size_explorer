@@ -1,5 +1,7 @@
 use std::{ops::Deref, ptr::NonNull};
 
+use crate::arena::memory::MB;
+
 use super::Arena;
 
 static mut SCRATCH_ARENAS: [Arena; 2] = [Arena::empty(), Arena::empty()];
@@ -25,11 +27,11 @@ impl Deref for ScratchArena<'_> {
     }
 }
 
-pub fn scratch_arena(arenas: &[Arena]) -> ScratchArena<'_> {
+pub fn scratch_arena<'a>(arenas: &[&'a Arena]) -> ScratchArena<'a> {
     unsafe {
         for sa in &mut SCRATCH_ARENAS[..] {
             if sa.buffer == NonNull::dangling() {
-                *sa = Arena::new(2 * 1024 * 1024);
+                *sa = Arena::new(128 * MB);
             }
 
             for arena in arenas {

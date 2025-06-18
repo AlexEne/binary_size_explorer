@@ -1,14 +1,17 @@
-pub struct FunctionProperty {
-    pub raw_name: String,
-    pub demangled_name: Option<String>,
-    pub monomorphization_of: Option<String>,
+use crate::arena::{array::Array, string::String};
+
+#[derive(Clone, Copy)]
+pub struct FunctionProperty<'a> {
+    pub raw_name: &'a str,
+    pub demangled_name: Option<&'a str>,
+    pub monomorphization_of: Option<&'a str>,
     pub shallow_size_bytes: u32,
     pub shallow_size_percent: f32,
     pub retained_size_bytes: u32,
     pub retained_size_percent: f32,
 }
 
-impl FunctionProperty {
+impl FunctionProperty<'_> {
     pub fn name(&self) -> &str {
         if let Some(demangled_name) = self.demangled_name.as_ref() {
             demangled_name
@@ -18,18 +21,18 @@ impl FunctionProperty {
     }
 }
 
-pub struct FunctionPropertyDebugInfo {
-    pub locals: Vec<String>,
-    pub function_ops: Vec<FunctionOp>,
+pub struct FunctionPropertyDebugInfo<'a> {
+    pub locals: Array<'a, &'a str>,
+    pub function_ops: Array<'a, FunctionOp<'a>>,
 }
 
-pub struct FunctionOp {
+pub struct FunctionOp<'a> {
     pub address: u64,
-    pub op: String,
+    pub op: &'a str,
 }
 
-impl FunctionOp {
-    pub fn new(addr: u64, decoded_asm: String) -> FunctionOp {
+impl<'a> FunctionOp<'a> {
+    pub fn new(addr: u64, decoded_asm: &'a str) -> FunctionOp<'a> {
         FunctionOp {
             address: addr,
             op: decoded_asm,
@@ -50,38 +53,33 @@ pub trait FunctionsView {
     fn get_total_size(&self) -> u32;
     fn get_total_percent(&self) -> f32;
 
-    fn get_locals_at(&self, idx: usize) -> &[String];
+    fn get_locals_at(&self, idx: usize) -> &[&str];
     fn get_ops_at(&self, idx: usize) -> &[FunctionOp];
     fn get_start_addr(&self, idx: usize) -> u64;
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum Filter {
-    #[default]
+#[derive(Debug, Eq, PartialEq)]
+pub enum Filter<'a> {
     All,
-    NameFilter {
-        name: String,
-    },
+    NameFilter { name: &'a str },
 }
 
-impl Filter {
-    pub fn name_filter(name: impl Into<String>) -> Filter {
-        Filter::NameFilter {
-            name: name.into().to_lowercase(),
-        }
+impl<'a> Filter<'a> {
+    pub fn name_filter(name: &'a str) -> Self {
+        Filter::NameFilter { name }
     }
 }
 
 #[derive(Debug)]
-pub struct DwarfLocationData {
-    pub file: Option<String>,
+pub struct DwarfLocationData<'a> {
+    pub file: Option<String<'a>>,
     pub line: Option<u32>,
     pub column: Option<u32>,
 }
 
-#[derive(Debug, Eq, Clone, Hash, PartialEq)]
-pub struct CodeLocation {
-    pub file: String,
+#[derive(Debug, Eq, Hash, PartialEq)]
+pub struct CodeLocation<'a> {
+    pub file: String<'a>,
     pub line: u32,
     pub column: u32,
 }

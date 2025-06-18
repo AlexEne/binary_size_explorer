@@ -1,3 +1,5 @@
+#![feature(allocator_api)]
+
 mod app;
 pub mod arena;
 mod code_viewer;
