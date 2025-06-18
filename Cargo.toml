@@ -19,18 +19,24 @@ eframe = { version = "0.31", default-features = false, features = [
 ] }
 emath = "0.31"
 env_logger = "0.11.8"
+# Same features as std lib
+hashbrown = { version = "0.15", default-features = false, features = [
+    'rustc-dep-of-std',
+] }
 serde = { version = "1.0.219", features = ["derive"] }
 twiggy-analyze = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
 twiggy-opt = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
 twiggy-parser = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
 twiggy-ir = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
 anyhow = "1.0.98"
-# twiggy-ir = "0.7.0"
 wasmparser = "0.230.0"
 wasm-tools = { version = "1.230.0", features = [
     "addr2line",
 ], default-features = false }
 addr2line = "0.24.2"
+profiling = { git = "https://github.com/aclysma/profiling.git", branch = "master", version = "1.0.16", features = [
+    "profile-with-superluminal",
+] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.172"
@@ -40,6 +46,10 @@ windows-sys = { version = "0.59", features = ["Win32_System_Memory"] }
 
 [profile.release]
 opt-level = 2
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
 
 [profile.dev.package."*"]
 opt-level = 2

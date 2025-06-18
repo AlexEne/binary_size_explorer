@@ -71,6 +71,7 @@ impl CodeViewer {
         }
     }
 
+    #[profiling::function]
     pub fn show_code_as_table(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let old_selectable_labels = ui.style().interaction.selectable_labels;

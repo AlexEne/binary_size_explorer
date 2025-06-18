@@ -257,7 +257,9 @@ dependencies = [
  "egui_extras",
  "emath",
  "env_logger",
+ "hashbrown",
  "libc",
+ "profiling 1.0.16 (git+https://github.com/aclysma/profiling.git?branch=master)",
  "serde",
  "twiggy-analyze",
  "twiggy-ir",
@@ -523,6 +525,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "compiler_builtins"
+version = "0.1.160"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6376049cfa92c0aa8b9ac95fae22184b981c658208d4ed8a1dc553cd83612895"
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -772,7 +780,7 @@ dependencies = [
  "objc2-foundation 0.2.2",
  "parking_lot",
  "percent-encoding",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle",
  "ron",
  "serde",
@@ -799,7 +807,7 @@ dependencies = [
  "epaint",
  "log",
  "nohash-hasher",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "ron",
  "serde",
 ]
@@ -829,7 +837,7 @@ dependencies = [
  "egui",
  "epaint",
  "log",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "thiserror 1.0.69",
  "type-map",
  "web-time",
@@ -848,7 +856,7 @@ dependencies = [
  "bytemuck",
  "egui",
  "log",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle",
  "serde",
  "smithay-clipboard",
@@ -880,7 +888,7 @@ dependencies = [
  "enum-map",
  "log",
  "mime_guess2",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -895,7 +903,7 @@ dependencies = [
  "glow",
  "log",
  "memoffset",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasm-bindgen",
  "web-sys",
  "winit",
@@ -981,7 +989,7 @@ dependencies = [
  "log",
  "nohash-hasher",
  "parking_lot",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
 ]
 
@@ -1276,7 +1284,10 @@ version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "84b26c544d002229e640969970a2e74021aadf6e2f96372b9c58eff97de08eb3"
 dependencies = [
+ "compiler_builtins",
  "foldhash",
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
  "serde",
 ]
 
@@ -2384,6 +2395,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "afbdc74edc00b6f6a218ca6a5364d6226a259d4b8ea1af4a0ea063f27e179f4d"
 
 [[package]]
+name = "profiling"
+version = "1.0.16"
+source = "git+https://github.com/aclysma/profiling.git?branch=master#5fdd041c92b3b75faee89d837622a05fe7b9d010"
+dependencies = [
+ "profiling-procmacros",
+ "superluminal-perf",
+]
+
+[[package]]
+name = "profiling-procmacros"
+version = "1.0.16"
+source = "git+https://github.com/aclysma/profiling.git?branch=master#5fdd041c92b3b75faee89d837622a05fe7b9d010"
+dependencies = [
+ "quote",
+ "syn 2.0.101",
+]
+
+[[package]]
 name = "quick-xml"
 version = "0.37.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2515,6 +2544,18 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-std-workspace-alloc"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9d441c3b2ebf55cebf796bfdc265d67fa09db17b7bb6bd4be75c509e1e8fec3"
+
+[[package]]
+name = "rustc-std-workspace-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa9c45b374136f52f2d6311062c7146bff20fec063c3f5d46a410bd937746955"
 
 [[package]]
 name = "rustix"
@@ -2775,6 +2816,21 @@ dependencies = [
  "rustversion",
  "syn 2.0.101",
 ]
+
+[[package]]
+name = "superluminal-perf"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f25a01f65079fdaf562930db1293d7a4abd4d98346a450cb7f37073af5c2b10"
+dependencies = [
+ "superluminal-perf-sys",
+]
+
+[[package]]
+name = "superluminal-perf-sys"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83d163f90b68349a742c75793727483b4d90a7bc77b7db434c79650f0b127e7"
 
 [[package]]
 name = "syn"
@@ -3469,7 +3525,7 @@ dependencies = [
  "js-sys",
  "log",
  "parking_lot",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle",
  "smallvec",
  "static_assertions",
@@ -3497,7 +3553,7 @@ dependencies = [
  "naga",
  "once_cell",
  "parking_lot",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle",
  "rustc-hash",
  "smallvec",
@@ -3535,7 +3591,7 @@ dependencies = [
  "once_cell",
  "ordered-float",
  "parking_lot",
- "profiling",
+ "profiling 1.0.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "raw-window-handle",
  "renderdoc-sys",
  "rustc-hash",
