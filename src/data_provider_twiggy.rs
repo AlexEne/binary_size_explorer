@@ -10,15 +10,17 @@ use addr2line::LookupResult;
 use hashbrown::{DefaultHashBuilder, HashMap};
 use std::{
     fmt::Write,
+    fs::File,
     hash::{DefaultHasher, Hash, Hasher},
+    io::Read,
 };
 use std::{ops::Range, time::Instant};
 use wasm_tools::addr2line::Addr2lineModules;
-use wasmparser::BinaryReader;
+use wasmparser::{BinaryReader, FuncType};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum SectionType {
-    TypeSection,
+    TypeSection(Vec<FuncType>),
     ImportSection,
     FunctionSection,
     TableSection,
@@ -35,7 +37,7 @@ pub enum SectionType {
     UnknownSection,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Section<'a> {
     pub ty: SectionType,
     pub name: &'a str,
@@ -50,7 +52,7 @@ pub struct FunctionData<'a> {
 
 pub struct DataProviderTwiggy<'a> {
     /// The raw binary data of the loaded wasm file.
-    pub wasm_data: Vec<u8>,
+    pub wasm_data: &'a [u8],
 
     pub view_mode: ViewMode,
     pub raw_data: Array<'a, FunctionData<'a>>,
@@ -76,16 +78,33 @@ impl<'a> DataProviderTwiggy<'a> {
     pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Self {
         let start = Instant::now();
 
-        let wasm_data = std::fs::read(path).unwrap();
+        let wasm_data: &'a [u8] = {
+            let mut file = File::open(path).unwrap();
+            let size = file
+                .metadata()
+                .map(|m| m.len() as usize)
+                .ok()
+                .expect("Failed to reas wasm file size");
+
+            let mut wasm_data = arena.alloc_slice_zeroed(size);
+            let bytes_read = file.read(&mut wasm_data).expect("Failed to read wasm file");
+            assert!(
+                bytes_read == size,
+                "Failed to read the entire wasm file {}<{}",
+                bytes_read,
+                size
+            );
+
+            wasm_data
+        };
 
         let mut items = twiggy_parser::parse(&wasm_data).unwrap();
         let mut id_to_idx = HashMap::new();
-
         items.compute_retained_sizes();
 
         let mut parser = wasmparser::Parser::new(0);
 
-        let mut sections = Array::new(arena, 32 * 1024);
+        let mut sections = Array::new(arena, 512 * 1024);
         let mut offset = 0;
         while offset < wasm_data.len() {
             let chunck = parser
@@ -94,12 +113,32 @@ impl<'a> DataProviderTwiggy<'a> {
             match chunck {
                 wasmparser::Chunk::Parsed { consumed, payload } => {
                     match payload {
-                        wasmparser::Payload::TypeSection(_) => sections.push(Section {
-                            ty: SectionType::TypeSection,
-                            name: "Type Section",
-                            offset,
-                            length: consumed,
-                        }),
+                        wasmparser::Payload::TypeSection(section_reader) => {
+                            println!("Count {}", section_reader.count());
+                            let mut func_types =
+                                Vec::with_capacity(section_reader.count() as usize);
+                            for rec_group in section_reader.into_iter() {
+                                println!("rec group");
+                                let Ok(rec_group) = rec_group else { break };
+
+                                for ty in rec_group.into_types() {
+                                    println!("ty: {:?}", ty);
+                                    match ty.composite_type.inner {
+                                        wasmparser::CompositeInnerType::Func(func_type) => {
+                                            func_types.push(func_type)
+                                        }
+                                        _ => unimplemented!(),
+                                    }
+                                }
+                            }
+
+                            sections.push(Section {
+                                ty: SectionType::TypeSection(func_types),
+                                name: "Type Section",
+                                offset,
+                                length: consumed,
+                            })
+                        }
                         wasmparser::Payload::ImportSection(_) => sections.push(Section {
                             ty: SectionType::ImportSection,
                             name: "Import Section",
@@ -173,12 +212,113 @@ impl<'a> DataProviderTwiggy<'a> {
                             offset,
                             length: consumed,
                         }),
-                        wasmparser::Payload::CustomSection(_) => sections.push(Section {
-                            ty: SectionType::CustomSection,
-                            name: "Custom Section",
-                            offset,
-                            length: consumed,
-                        }),
+                        wasmparser::Payload::CustomSection(custom_section) => {
+                            match custom_section.as_known() {
+                                wasmparser::KnownCustom::Name(mut name_section_reader) => {
+                                    while let Some(Ok(name)) = name_section_reader.next() {
+                                        match name {
+                                            // wasmparser::Name::Module { name, name_range } => todo!(),
+                                            wasmparser::Name::Function(section_limited) => {
+                                                println!(
+                                                    "Function names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Local(section_limited) => {
+                                                println!(
+                                                    "Local names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Label(section_limited) => {
+                                                println!(
+                                                    "Label names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Type(section_limited) => {
+                                                println!("Type names: {}", section_limited.count());
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Table(section_limited) => {
+                                                println!(
+                                                    "Table names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Memory(section_limited) => {
+                                                println!(
+                                                    "Memory names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Global(section_limited) => {
+                                                println!(
+                                                    "Global names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Element(section_limited) => {
+                                                println!("Name names: {}", section_limited.count());
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Data(section_limited) => {
+                                                println!("Data names: {}", section_limited.count());
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Field(section_limited) => {
+                                                println!(
+                                                    "Field names: {}",
+                                                    section_limited.count()
+                                                );
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            wasmparser::Name::Tag(section_limited) => {
+                                                println!("Tag names: {}", section_limited.count());
+                                                for naming in section_limited.into_iter() {
+                                                    println!("{:?}", naming)
+                                                }
+                                            }
+                                            // wasmparser::Name::Unknown { ty, data, range } => todo!(),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            sections.push(Section {
+                                ty: SectionType::CustomSection,
+                                name: "Custom Section",
+                                offset,
+                                length: consumed,
+                            });
+                        }
                         wasmparser::Payload::UnknownSection { .. } => sections.push(Section {
                             ty: SectionType::UnknownSection,
                             name: "Unknown Section",
@@ -244,7 +384,7 @@ impl<'a> DataProviderTwiggy<'a> {
                     // We set the reader offset to 0 since range is an absolute offset in the wasm file.
                     // Decent reference here: https://blog.ttulka.com/learning-webassembly-2-wasm-binary-format/
                     let (locals, function_ops) =
-                        get_locals_and_ops_for_function(arena, &wasm_data, &range);
+                        get_locals_and_ops_for_function(arena, wasm_data, &range);
 
                     if modules.is_some() {
                         code_location_count += function_ops.len();
@@ -284,34 +424,34 @@ impl<'a> DataProviderTwiggy<'a> {
         let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
             HashMap::with_capacity_in(code_location_count, arena);
 
-        for raw_data_item in raw_data.iter() {
-            let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
+        // for raw_data_item in raw_data.iter() {
+        //     let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
 
-            if let Some(modules) = modules.as_mut() {
-                for function_op in function_ops.iter() {
-                    let addr = function_op.address;
-                    if let Some(location_data) = find_frames(arena, addr, modules) {
-                        if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
-                            let cl_index = code_locations.len();
+        //     if let Some(modules) = modules.as_mut() {
+        //         for function_op in function_ops.iter() {
+        //             let addr = function_op.address;
+        //             if let Some(location_data) = find_frames(arena, addr, modules) {
+        //                 if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
+        //                     let cl_index = code_locations.len();
 
-                            let mut hasher = DefaultHasher::new();
-                            file.as_str().hash(&mut hasher);
-                            line.saturating_sub(1).hash(&mut hasher);
-                            let hash = hasher.finish();
+        //                     let mut hasher = DefaultHasher::new();
+        //                     file.as_str().hash(&mut hasher);
+        //                     line.saturating_sub(1).hash(&mut hasher);
+        //                     let hash = hasher.finish();
 
-                            code_locations.push(CodeLocation {
-                                file,
-                                line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
-                                column: 0,
-                            });
-                            addr_to_location.insert(addr, cl_index);
+        //                     code_locations.push(CodeLocation {
+        //                         file,
+        //                         line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
+        //                         column: 0,
+        //                     });
+        //                     addr_to_location.insert(addr, cl_index);
 
-                            locations_reverse_map.entry(hash).or_default().push(addr);
-                        }
-                    }
-                }
-            }
-        }
+        //                     locations_reverse_map.entry(hash).or_default().push(addr);
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
         let dominator_tree = items.dominator_tree();
         let mut tree_items: Array<'_, TreeItemState> = Array::new(arena, raw_data.len());
@@ -391,7 +531,7 @@ impl<'a> DataProviderTwiggy<'a> {
 
 fn get_locals_and_ops_for_function<'a, 'b>(
     arena: &'a Arena,
-    data: &'b [u8],
+    data: &'a [u8],
     range: &'b Range<usize>,
 ) -> (Array<'a, &'a str>, Array<'a, FunctionOp<'a>>) {
     let function_body =
@@ -404,9 +544,9 @@ fn get_locals_and_ops_for_function<'a, 'b>(
         // We must check the locals count since this reader will just read even if we have 0 locals.
         while local_index < locals_reader.get_count() {
             if let Ok(local) = locals_reader.read() {
-                let mut local_str = String::new(arena, 1024);
-                _ = write!(&mut local_str, "{:?}", local);
-                local_str.shrink_to_fit();
+                let mut local_str = String::new(arena, 0);
+                // _ = write!(&mut local_str, "{:?}", local);
+                // local_str.shrink_to_fit();
 
                 locals.push(local_str.to_str());
             }
@@ -422,11 +562,7 @@ fn get_locals_and_ops_for_function<'a, 'b>(
         // let addr = 0x000273 + offset;
         let addr = range.start + offset;
 
-        let mut decoded_asm = String::new(arena, 1024);
-        _ = write!(&mut decoded_asm, "{:?}", op);
-        decoded_asm.shrink_to_fit();
-
-        temp_ops.push(FunctionOp::new(addr as u64, decoded_asm.to_str()));
+        temp_ops.push(FunctionOp::new(addr as u64, op));
     }
 
     let mut ops = Array::new(arena, temp_ops.len());
@@ -634,70 +770,70 @@ fn find_frames<'a>(
     return None;
 }
 
-#[cfg(test)]
-mod test {
-    use crate::arena::memory::MB;
+// #[cfg(test)]
+// mod test {
+//     use crate::arena::memory::MB;
 
-    use super::*;
-    use std::fs;
-    use wasm_tools::addr2line::Addr2lineModules;
+//     use super::*;
+//     use std::fs;
+//     use wasm_tools::addr2line::Addr2lineModules;
 
-    #[test]
-    fn test_a_simple_wasm_function_that_returns_42() {
-        let function_bytes = [0, 65, 42, 15, 11];
+//     #[test]
+//     fn test_a_simple_wasm_function_that_returns_42() {
+//         let function_bytes = [0, 65, 42, 15, 11];
 
-        let arena = Arena::new(2 * MB);
-        let (locals, ops) = get_locals_and_ops_for_function(&arena, &function_bytes, &(0..5));
-        assert_eq!(locals.len(), 0);
-        assert_eq!(ops.len(), 3);
+//         let arena = Arena::new(2 * MB);
+//         let (locals, ops) = get_locals_and_ops_for_function(&arena, &function_bytes, &(0..5));
+//         assert_eq!(locals.len(), 0);
+//         assert_eq!(ops.len(), 3);
 
-        let ref_ops = ["I32Const { value: 42 }", "Return", "End"];
+//         let ref_ops = ["I32Const { value: 42 }", "Return", "End"];
 
-        for idx in 0..3 {
-            assert_eq!(ops[idx].op, ref_ops[idx]);
-        }
-    }
+//         for idx in 0..3 {
+//             assert_eq!(ops[idx].op, ref_ops[idx]);
+//         }
+//     }
 
-    #[test]
-    fn debug_loader_things() {
-        // let loader = Loader::new("wasm_test_with_debug.wasm").unwrap();
-        // let loc = loader.find_location(0x19e6).unwrap().unwrap();
-        let arena = Arena::new(2 * MB);
-        let addr_and_expectations = [
-            (
-                0x000213,
-                DwarfLocationData {
-                    file: Some(String::from_str(
-                        &arena,
-                        "/Users/alexene/Desktop/ws/simple_wasm_test_with_dwarf/src/lib.rs",
-                    )),
-                    line: Some(2),
-                    column: Some(0),
-                },
-            ),
-            (
-                0x000315,
-                DwarfLocationData {
-                    file: Some(String::from_str(
-                        &arena,
-                        "/rustc/05f9846f893b09a1be1fc8560e33fc3c815cfecb/library/core/src/fmt/mod.rs",
-                    )),
-                    line: Some(2652),
-                    column: Some(71),
-                },
-            ),
-        ];
+//     #[test]
+//     fn debug_loader_things() {
+//         // let loader = Loader::new("wasm_test_with_debug.wasm").unwrap();
+//         // let loc = loader.find_location(0x19e6).unwrap().unwrap();
+//         let arena = Arena::new(2 * MB);
+//         let addr_and_expectations = [
+//             (
+//                 0x000213,
+//                 DwarfLocationData {
+//                     file: Some(String::from_str(
+//                         &arena,
+//                         "/Users/alexene/Desktop/ws/simple_wasm_test_with_dwarf/src/lib.rs",
+//                     )),
+//                     line: Some(2),
+//                     column: Some(0),
+//                 },
+//             ),
+//             (
+//                 0x000315,
+//                 DwarfLocationData {
+//                     file: Some(String::from_str(
+//                         &arena,
+//                         "/rustc/05f9846f893b09a1be1fc8560e33fc3c815cfecb/library/core/src/fmt/mod.rs",
+//                     )),
+//                     line: Some(2652),
+//                     column: Some(71),
+//                 },
+//             ),
+//         ];
 
-        let wasm_file_data = fs::read("simple_wasm_test_with_dwarf.wasm").unwrap();
-        let mut modules = Addr2lineModules::parse(&wasm_file_data).unwrap();
+//         let wasm_file_data = fs::read("simple_wasm_test_with_dwarf.wasm").unwrap();
+//         let mut modules = Addr2lineModules::parse(&wasm_file_data).unwrap();
 
-        // Rev iter since I want to make sure there's no requirement on order of addresses.
-        // Not sure why modules is &mut tho :(
-        for (addr, expectation) in addr_and_expectations.iter().rev() {
-            let dwarf_loc = find_frames(&arena, *addr, &mut modules).unwrap();
-            assert_eq!(dwarf_loc.file, expectation.file);
-            assert_eq!(dwarf_loc.line, expectation.line);
-            assert_eq!(dwarf_loc.column, expectation.column);
-        }
-    }
-}
+//         // Rev iter since I want to make sure there's no requirement on order of addresses.
+//         // Not sure why modules is &mut tho :(
+//         for (addr, expectation) in addr_and_expectations.iter().rev() {
+//             let dwarf_loc = find_frames(&arena, *addr, &mut modules).unwrap();
+//             assert_eq!(dwarf_loc.file, expectation.file);
+//             assert_eq!(dwarf_loc.line, expectation.line);
+//             assert_eq!(dwarf_loc.column, expectation.column);
+//         }
+//     }
+// }

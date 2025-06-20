@@ -1,5 +1,6 @@
-use crate::arena::Arena;
 use crate::arena::memory::GB;
+use crate::arena::scratch::scratch_arena;
+use crate::arena::{self, Arena};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
@@ -285,7 +286,7 @@ impl eframe::App for TemplateApp {
                                     row_data.push(RowData {
                                         cells: vec![
                                             format!("0x{:04x}", op.address),
-                                            String::from(op.op),
+                                            format!("{:?}", op.op),
                                         ],
                                         bg_color: None,
                                         tooltip: None,

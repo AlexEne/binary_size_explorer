@@ -113,6 +113,21 @@ pub unsafe trait AnyBits {}
 /// that memory represents a valid object of type `T`.
 pub unsafe trait ZeroBits {}
 
+macro_rules! impl_zero_bits_to_types {
+    ($type:ty) => {
+        unsafe impl ZeroBits for $type {}
+    };
+
+    ($type:ty, $($types:ty),+) => {
+        impl_zero_bits_to_types!($type);
+        impl_zero_bits_to_types!($($types),+);
+    };
+}
+
+impl_zero_bits_to_types!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+);
+
 /// An arena allocator.
 pub struct Arena {
     buffer: NonNull<u8>,

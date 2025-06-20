@@ -1,3 +1,5 @@
+use wasmparser::Operator;
+
 use crate::arena::{array::Array, string::String};
 
 #[derive(Clone, Copy)]
@@ -28,15 +30,12 @@ pub struct FunctionPropertyDebugInfo<'a> {
 
 pub struct FunctionOp<'a> {
     pub address: u64,
-    pub op: &'a str,
+    pub op: Operator<'a>,
 }
 
 impl<'a> FunctionOp<'a> {
-    pub fn new(addr: u64, decoded_asm: &'a str) -> FunctionOp<'a> {
-        FunctionOp {
-            address: addr,
-            op: decoded_asm,
-        }
+    pub fn new(addr: u64, op: Operator<'a>) -> FunctionOp<'a> {
+        FunctionOp { address: addr, op }
     }
 }
 
