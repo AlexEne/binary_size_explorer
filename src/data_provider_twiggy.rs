@@ -6,7 +6,10 @@ use crate::{
     },
     gui::tree_view::{TreeItemState, TreeState},
 };
-use addr2line::LookupResult;
+use addr2line::{
+    LookupResult,
+    gimli::{EndianSlice, LittleEndian},
+};
 use hashbrown::{DefaultHashBuilder, HashMap};
 use std::{
     fmt::Write,
@@ -310,7 +313,9 @@ impl<'a> DataProviderTwiggy<'a> {
                                         }
                                     }
                                 }
-                                _ => {}
+                                _ => {
+                                    println!("Unknown section {}", custom_section.name());
+                                }
                             }
                             sections.push(Section {
                                 ty: SectionType::CustomSection,
@@ -349,7 +354,7 @@ impl<'a> DataProviderTwiggy<'a> {
         }
 
         let mut raw_data = Array::new(arena, item_count);
-        let mut modules = Addr2lineModules::parse(&wasm_data).ok();
+        let mut modules = Addr2lineModules::parse(&wasm_data).expect("Failed to parse wasm module");
         let mut code_location_count = 0;
 
         for item in items.iter() {
@@ -386,9 +391,9 @@ impl<'a> DataProviderTwiggy<'a> {
                     let (locals, function_ops) =
                         get_locals_and_ops_for_function(arena, wasm_data, &range);
 
-                    if modules.is_some() {
-                        code_location_count += function_ops.len();
-                    }
+                    // if modules.is_some() {
+                    code_location_count += function_ops.len();
+                    // }
 
                     (locals, function_ops)
                 }
@@ -424,41 +429,48 @@ impl<'a> DataProviderTwiggy<'a> {
         let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
             HashMap::with_capacity_in(code_location_count, arena);
 
-        // for raw_data_item in raw_data.iter() {
-        //     let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
+        let (mut context, _) = modules
+            .context(0, true)
+            .expect("Failed to create module context")
+            .unwrap();
 
-        //     if let Some(modules) = modules.as_mut() {
-        //         for function_op in function_ops.iter() {
-        //             let addr = function_op.address;
-        //             if let Some(location_data) = find_frames(arena, addr, modules) {
-        //                 if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
-        //                     let cl_index = code_locations.len();
+        for raw_data_item in raw_data.iter() {
+            let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
 
-        //                     let mut hasher = DefaultHasher::new();
-        //                     file.as_str().hash(&mut hasher);
-        //                     line.saturating_sub(1).hash(&mut hasher);
-        //                     let hash = hasher.finish();
+            // if let Some(modules) = modules.as_mut() {
+            for function_op in function_ops.iter() {
+                let addr = function_op.address;
+                if let Some(location_data) = find_frames(arena, addr, &mut context) {
+                    if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
+                        let cl_index = code_locations.len();
 
-        //                     code_locations.push(CodeLocation {
-        //                         file,
-        //                         line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
-        //                         column: 0,
-        //                     });
-        //                     addr_to_location.insert(addr, cl_index);
+                        let mut hasher = DefaultHasher::new();
+                        file.as_str().hash(&mut hasher);
+                        line.saturating_sub(1).hash(&mut hasher);
+                        let hash = hasher.finish();
 
-        //                     locations_reverse_map.entry(hash).or_default().push(addr);
-        //                 }
-        //             }
-        //         }
-        //     }
-        // }
+                        println!("CodeLocation {:?} {}", file, line.saturating_sub(1));
+
+                        code_locations.push(CodeLocation {
+                            file,
+                            line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
+                            column: 0,
+                        });
+                        addr_to_location.insert(addr, cl_index);
+
+                        locations_reverse_map.entry(hash).or_default().push(addr);
+                    }
+                }
+            }
+            // }
+        }
 
         let dominator_tree = items.dominator_tree();
-        let mut tree_items: Array<'_, TreeItemState> = Array::new(arena, raw_data.len());
+        let mut tree_items: Array<'_, TreeItemState> = Array::new(arena, raw_data.len() * 2);
 
         let scratch = scratch_arena(&[arena]);
-        let mut node_stack = Array::new(&scratch, raw_data.len());
-        let mut children_scratch = Array::new(&scratch, raw_data.len());
+        let mut node_stack = Array::new(&scratch, raw_data.len() * 2);
+        let mut children_scratch = Array::new(&scratch, raw_data.len() * 2);
         node_stack.push((0, items.meta_root()));
 
         while let Some((parent_index, id)) = node_stack.pop() {
@@ -749,10 +761,9 @@ impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
 fn find_frames<'a>(
     arena: &'a Arena,
     addr: u64,
-    modules: &mut Addr2lineModules<'_>,
+    context: &mut addr2line::Context<EndianSlice<'a, LittleEndian>>,
 ) -> Option<DwarfLocationData<'a>> {
-    let (context, text_rel_addr) = modules.context(addr, false).ok()??;
-    let mut frames = match context.find_frames(text_rel_addr) {
+    let mut frames = match context.find_frames(addr) {
         LookupResult::Output(result) => result.ok()?,
         LookupResult::Load { .. } => panic!("Split dwarf not supported"),
     };

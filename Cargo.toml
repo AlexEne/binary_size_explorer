@@ -54,5 +54,5 @@ opt-level = 2
 inherits = "release"
 debug = true
 
-[profile.dev.package."*"]
-opt-level = 2
+# [profile.dev.package."*"]
+# opt-level = 2

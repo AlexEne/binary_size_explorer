@@ -6,7 +6,7 @@ use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use crate::memory_viewer::MemoryViewer;
-use egui::{CollapsingHeader, ScrollArea, Vec2b};
+use egui::{CollapsingHeader, ScrollArea, TextBuffer, Vec2b};
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
@@ -254,6 +254,13 @@ impl eframe::App for TemplateApp {
                 });
             });
         });
+
+        egui::TopBottomPanel::bottom("BottomPanel")
+            .resizable(false)
+            .show(ctx, |ui| {
+                let label = self.file_entries[0].path.to_string_lossy();
+                ui.label(label.as_str());
+            });
 
         egui::SidePanel::right("RightPanel")
             .resizable(true)
