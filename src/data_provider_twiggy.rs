@@ -85,7 +85,7 @@ impl<'a> DataProviderTwiggy<'a> {
 
         let mut parser = wasmparser::Parser::new(0);
 
-        let mut sections = Array::new(arena, 32 * 1024);
+        let mut sections = Array::new(arena, 128 * 1024);
         let mut offset = 0;
         while offset < wasm_data.len() {
             let chunck = parser
@@ -314,11 +314,11 @@ impl<'a> DataProviderTwiggy<'a> {
         }
 
         let dominator_tree = items.dominator_tree();
-        let mut tree_items: Array<'_, TreeItemState> = Array::new(arena, raw_data.len());
+        let mut tree_items: Array<'_, TreeItemState> = Array::new(arena, raw_data.len() * 2);
 
         let scratch = scratch_arena(&[arena]);
-        let mut node_stack = Array::new(&scratch, raw_data.len());
-        let mut children_scratch = Array::new(&scratch, raw_data.len());
+        let mut node_stack = Array::new(&scratch, raw_data.len() * 2);
+        let mut children_scratch = Array::new(&scratch, raw_data.len() * 2);
         node_stack.push((0, items.meta_root()));
 
         while let Some((parent_index, id)) = node_stack.pop() {
@@ -358,6 +358,7 @@ impl<'a> DataProviderTwiggy<'a> {
                 }
             }
         }
+        tree_items.shrink_to_fit();
 
         for index in (0..tree_items.len()).rev() {
             let parent = tree_items[index].parent;
