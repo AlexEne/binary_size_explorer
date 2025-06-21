@@ -117,15 +117,15 @@ impl<'a> DataProviderTwiggy<'a> {
                 wasmparser::Chunk::Parsed { consumed, payload } => {
                     match payload {
                         wasmparser::Payload::TypeSection(section_reader) => {
-                            println!("Count {}", section_reader.count());
+                            // println!("Count {}", section_reader.count());
                             let mut func_types =
                                 Vec::with_capacity(section_reader.count() as usize);
                             for rec_group in section_reader.into_iter() {
-                                println!("rec group");
+                                // println!("rec group");
                                 let Ok(rec_group) = rec_group else { break };
 
                                 for ty in rec_group.into_types() {
-                                    println!("ty: {:?}", ty);
+                                    // println!("ty: {:?}", ty);
                                     match ty.composite_type.inner {
                                         wasmparser::CompositeInnerType::Func(func_type) => {
                                             func_types.push(func_type)
@@ -216,107 +216,107 @@ impl<'a> DataProviderTwiggy<'a> {
                             length: consumed,
                         }),
                         wasmparser::Payload::CustomSection(custom_section) => {
-                            match custom_section.as_known() {
-                                wasmparser::KnownCustom::Name(mut name_section_reader) => {
-                                    while let Some(Ok(name)) = name_section_reader.next() {
-                                        match name {
-                                            // wasmparser::Name::Module { name, name_range } => todo!(),
-                                            wasmparser::Name::Function(section_limited) => {
-                                                println!(
-                                                    "Function names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Local(section_limited) => {
-                                                println!(
-                                                    "Local names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Label(section_limited) => {
-                                                println!(
-                                                    "Label names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Type(section_limited) => {
-                                                println!("Type names: {}", section_limited.count());
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Table(section_limited) => {
-                                                println!(
-                                                    "Table names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Memory(section_limited) => {
-                                                println!(
-                                                    "Memory names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Global(section_limited) => {
-                                                println!(
-                                                    "Global names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Element(section_limited) => {
-                                                println!("Name names: {}", section_limited.count());
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Data(section_limited) => {
-                                                println!("Data names: {}", section_limited.count());
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Field(section_limited) => {
-                                                println!(
-                                                    "Field names: {}",
-                                                    section_limited.count()
-                                                );
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            wasmparser::Name::Tag(section_limited) => {
-                                                println!("Tag names: {}", section_limited.count());
-                                                for naming in section_limited.into_iter() {
-                                                    println!("{:?}", naming)
-                                                }
-                                            }
-                                            // wasmparser::Name::Unknown { ty, data, range } => todo!(),
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    println!("Unknown section {}", custom_section.name());
-                                }
-                            }
+                            // match custom_section.as_known() {
+                            //     wasmparser::KnownCustom::Name(mut name_section_reader) => {
+                            //         while let Some(Ok(name)) = name_section_reader.next() {
+                            //             match name {
+                            //                 // wasmparser::Name::Module { name, name_range } => todo!(),
+                            //                 wasmparser::Name::Function(section_limited) => {
+                            //                     println!(
+                            //                         "Function names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Local(section_limited) => {
+                            //                     println!(
+                            //                         "Local names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Label(section_limited) => {
+                            //                     println!(
+                            //                         "Label names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Type(section_limited) => {
+                            //                     println!("Type names: {}", section_limited.count());
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Table(section_limited) => {
+                            //                     println!(
+                            //                         "Table names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Memory(section_limited) => {
+                            //                     println!(
+                            //                         "Memory names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Global(section_limited) => {
+                            //                     println!(
+                            //                         "Global names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Element(section_limited) => {
+                            //                     println!("Name names: {}", section_limited.count());
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Data(section_limited) => {
+                            //                     println!("Data names: {}", section_limited.count());
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Field(section_limited) => {
+                            //                     println!(
+                            //                         "Field names: {}",
+                            //                         section_limited.count()
+                            //                     );
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 wasmparser::Name::Tag(section_limited) => {
+                            //                     println!("Tag names: {}", section_limited.count());
+                            //                     for naming in section_limited.into_iter() {
+                            //                         println!("{:?}", naming)
+                            //                     }
+                            //                 }
+                            //                 // wasmparser::Name::Unknown { ty, data, range } => todo!(),
+                            //                 _ => {}
+                            //             }
+                            //         }
+                            //     }
+                            //     _ => {
+                            //         println!("Unknown section {}", custom_section.name());
+                            //     }
+                            // }
                             sections.push(Section {
                                 ty: SectionType::CustomSection,
                                 name: "Custom Section",
@@ -449,7 +449,7 @@ impl<'a> DataProviderTwiggy<'a> {
                         line.saturating_sub(1).hash(&mut hasher);
                         let hash = hasher.finish();
 
-                        println!("CodeLocation {:?} {}", file, line.saturating_sub(1));
+                        // println!("CodeLocation {:?} {}", file, line.saturating_sub(1));
 
                         code_locations.push(CodeLocation {
                             file,

@@ -258,8 +258,10 @@ impl eframe::App for TemplateApp {
         egui::TopBottomPanel::bottom("BottomPanel")
             .resizable(false)
             .show(ctx, |ui| {
-                let label = self.file_entries[0].path.to_string_lossy();
-                ui.label(label.as_str());
+                if !self.file_entries.is_empty() {
+                    let label = self.file_entries[0].path.to_string_lossy();
+                    ui.label(label.as_str());
+                }
             });
 
         egui::SidePanel::right("RightPanel")
