@@ -296,6 +296,10 @@ impl<'a, T> Array<'a, T> {
         unsafe { slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }
 
+    pub fn to_slice(self) -> &'a [T] {
+        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
     /// Returns a raw pointer to the array's buffer.
     ///
     /// The caller must ensure that the array outlives the pointer this

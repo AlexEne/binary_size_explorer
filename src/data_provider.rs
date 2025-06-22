@@ -1,3 +1,5 @@
+use wasmparser::{Operator, ValType};
+
 use crate::arena::{array::Array, string::String};
 
 #[derive(Clone, Copy)]
@@ -22,21 +24,18 @@ impl FunctionProperty<'_> {
 }
 
 pub struct FunctionPropertyDebugInfo<'a> {
-    pub locals: Array<'a, &'a str>,
+    pub locals: Array<'a, (u32, ValType)>,
     pub function_ops: Array<'a, FunctionOp<'a>>,
 }
 
 pub struct FunctionOp<'a> {
     pub address: u64,
-    pub op: &'a str,
+    pub op: Operator<'a>,
 }
 
 impl<'a> FunctionOp<'a> {
-    pub fn new(addr: u64, decoded_asm: &'a str) -> FunctionOp<'a> {
-        FunctionOp {
-            address: addr,
-            op: decoded_asm,
-        }
+    pub fn new(addr: u64, op: Operator<'a>) -> FunctionOp<'a> {
+        FunctionOp { address: addr, op }
     }
 }
 
@@ -53,7 +52,7 @@ pub trait FunctionsView {
     fn get_total_size(&self) -> u32;
     fn get_total_percent(&self) -> f32;
 
-    fn get_locals_at(&self, idx: usize) -> &[&str];
+    fn get_locals_at(&self, idx: usize) -> &[(u32, ValType)];
     fn get_ops_at(&self, idx: usize) -> &[FunctionOp];
     fn get_start_addr(&self, idx: usize) -> u64;
 }

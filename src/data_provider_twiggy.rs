@@ -6,15 +6,20 @@ use crate::{
     },
     gui::tree_view::{TreeItemState, TreeState},
 };
-use addr2line::LookupResult;
+use addr2line::{
+    LookupResult,
+    gimli::{EndianSlice, LittleEndian},
+};
 use hashbrown::{DefaultHashBuilder, HashMap};
 use std::{
     fmt::Write,
+    fs::File,
     hash::{DefaultHasher, Hash, Hasher},
+    io::Read,
 };
 use std::{ops::Range, time::Instant};
 use wasm_tools::addr2line::Addr2lineModules;
-use wasmparser::BinaryReader;
+use wasmparser::{BinaryReader, ValType};
 
 #[derive(Clone, Copy)]
 pub enum SectionType {
@@ -50,7 +55,7 @@ pub struct FunctionData<'a> {
 
 pub struct DataProviderTwiggy<'a> {
     /// The raw binary data of the loaded wasm file.
-    pub wasm_data: Vec<u8>,
+    pub wasm_data: &'a [u8],
 
     pub view_mode: ViewMode,
     pub raw_data: Array<'a, FunctionData<'a>>,
@@ -76,14 +81,33 @@ impl<'a> DataProviderTwiggy<'a> {
     pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Self {
         let start = Instant::now();
 
-        let wasm_data = std::fs::read(path).unwrap();
+        let wasm_data: &'a [u8] = {
+            let mut file = File::open(path).unwrap();
+            let size = file
+                .metadata()
+                .map(|m| m.len() as usize)
+                .ok()
+                .expect("Failed to reas wasm file size");
+
+            let mut wasm_data = arena.alloc_slice_zeroed(size);
+            let bytes_read = file.read(&mut wasm_data).expect("Failed to read wasm file");
+            assert!(
+                bytes_read == size,
+                "Failed to read the entire wasm file {}<{}",
+                bytes_read,
+                size
+            );
+
+            wasm_data
+        };
 
         let mut items = twiggy_parser::parse(&wasm_data).unwrap();
+        items.compute_retained_sizes();
         let mut id_to_idx = HashMap::new();
 
-        items.compute_retained_sizes();
-
         let mut parser = wasmparser::Parser::new(0);
+
+        let mut code_section_start: u64 = 0;
 
         let mut sections = Array::new(arena, 128 * 1024);
         let mut offset = 0;
@@ -166,7 +190,9 @@ impl<'a> DataProviderTwiggy<'a> {
                             offset,
                             length: consumed,
                         }),
-
+                        wasmparser::Payload::CodeSectionStart { range, .. } => {
+                            code_section_start = range.start as u64
+                        }
                         wasmparser::Payload::CodeSectionEntry(_) => sections.push(Section {
                             ty: SectionType::CodeSection,
                             name: "Code Section",
@@ -244,7 +270,7 @@ impl<'a> DataProviderTwiggy<'a> {
                     // We set the reader offset to 0 since range is an absolute offset in the wasm file.
                     // Decent reference here: https://blog.ttulka.com/learning-webassembly-2-wasm-binary-format/
                     let (locals, function_ops) =
-                        get_locals_and_ops_for_function(arena, &wasm_data, &range);
+                        get_locals_and_ops_for_function(arena, wasm_data, &range);
 
                     if modules.is_some() {
                         code_location_count += function_ops.len();
@@ -284,13 +310,22 @@ impl<'a> DataProviderTwiggy<'a> {
         let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
             HashMap::with_capacity_in(code_location_count, arena);
 
-        for raw_data_item in raw_data.iter() {
-            let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
+        if let Some(mut modules) = modules {
+            let (mut context, _) = modules
+                .context(code_section_start, false)
+                .expect("Failed to create module context")
+                .unwrap();
 
-            if let Some(modules) = modules.as_mut() {
+            for raw_data_item in raw_data.iter() {
+                let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
+
                 for function_op in function_ops.iter() {
                     let addr = function_op.address;
-                    if let Some(location_data) = find_frames(arena, addr, modules) {
+                    if let Some(location_data) = find_frames(
+                        arena,
+                        addr.checked_sub(code_section_start).unwrap_or(0),
+                        &mut context,
+                    ) {
                         if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
                             let cl_index = code_locations.len();
 
@@ -392,9 +427,9 @@ impl<'a> DataProviderTwiggy<'a> {
 
 fn get_locals_and_ops_for_function<'a, 'b>(
     arena: &'a Arena,
-    data: &'b [u8],
+    data: &'a [u8],
     range: &'b Range<usize>,
-) -> (Array<'a, &'a str>, Array<'a, FunctionOp<'a>>) {
+) -> (Array<'a, (u32, ValType)>, Array<'a, FunctionOp<'a>>) {
     let function_body =
         wasmparser::FunctionBody::new(BinaryReader::new(&data[range.start..range.end], 0));
 
@@ -405,11 +440,7 @@ fn get_locals_and_ops_for_function<'a, 'b>(
         // We must check the locals count since this reader will just read even if we have 0 locals.
         while local_index < locals_reader.get_count() {
             if let Ok(local) = locals_reader.read() {
-                let mut local_str = String::new(arena, 1024);
-                _ = write!(&mut local_str, "{:?}", local);
-                local_str.shrink_to_fit();
-
-                locals.push(local_str.to_str());
+                locals.push(local);
             }
             local_index += 1;
         }
@@ -417,23 +448,14 @@ fn get_locals_and_ops_for_function<'a, 'b>(
 
     let mut body = function_body.get_operators_reader().unwrap();
 
-    let scratch = scratch_arena(&[arena]);
-    let mut temp_ops = Array::new(&scratch, 4096 * 128);
+    let mut ops = Array::new(arena, body.get_binary_reader().bytes_remaining() * 8);
     while let Ok((op, offset)) = body.read_with_offset() {
         // let addr = 0x000273 + offset;
         let addr = range.start + offset;
 
-        let mut decoded_asm = String::new(arena, 1024);
-        _ = write!(&mut decoded_asm, "{:?}", op);
-        decoded_asm.shrink_to_fit();
-
-        temp_ops.push(FunctionOp::new(addr as u64, decoded_asm.to_str()));
+        ops.push(FunctionOp::new(addr as u64, op));
     }
-
-    let mut ops = Array::new(arena, temp_ops.len());
-    unsafe {
-        ops.extend_from_slice_unchecked(temp_ops.as_slice());
-    }
+    ops.shrink_to_fit();
 
     (locals, ops)
 }
@@ -570,7 +592,7 @@ impl FunctionsView for DataProviderTwiggy<'_> {
         self.total_percent
     }
 
-    fn get_locals_at(&self, idx: usize) -> &[&str] {
+    fn get_locals_at(&self, idx: usize) -> &[(u32, ValType)] {
         &self.raw_data[idx].debug_info.locals
     }
 
@@ -613,11 +635,10 @@ impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
 
 fn find_frames<'a>(
     arena: &'a Arena,
-    addr: u64,
-    modules: &mut Addr2lineModules<'_>,
+    rel_addr: u64,
+    context: &mut addr2line::Context<EndianSlice<'a, LittleEndian>>,
 ) -> Option<DwarfLocationData<'a>> {
-    let (context, text_rel_addr) = modules.context(addr, false).ok()??;
-    let mut frames = match context.find_frames(text_rel_addr) {
+    let mut frames = match context.find_frames(rel_addr) {
         LookupResult::Output(result) => result.ok()?,
         LookupResult::Load { .. } => panic!("Split dwarf not supported"),
     };
@@ -655,7 +676,8 @@ mod test {
         let ref_ops = ["I32Const { value: 42 }", "Return", "End"];
 
         for idx in 0..3 {
-            assert_eq!(ops[idx].op, ref_ops[idx]);
+            let ops = format!("{:?}", ops[idx].op);
+            assert_eq!(ops, ref_ops[idx]);
         }
     }
 
@@ -692,10 +714,18 @@ mod test {
         let wasm_file_data = fs::read("simple_wasm_test_with_dwarf.wasm").unwrap();
         let mut modules = Addr2lineModules::parse(&wasm_file_data).unwrap();
 
+        // MAGIC number: this is the byte where code section starts
+        let code_section_start = 521;
+        let (mut context, _) = modules
+            .context(code_section_start, false)
+            .expect("Failed to create module context")
+            .unwrap();
+
         // Rev iter since I want to make sure there's no requirement on order of addresses.
         // Not sure why modules is &mut tho :(
         for (addr, expectation) in addr_and_expectations.iter().rev() {
-            let dwarf_loc = find_frames(&arena, *addr, &mut modules).unwrap();
+            let dwarf_loc =
+                find_frames(&arena, (*addr) - code_section_start, &mut context).unwrap();
             assert_eq!(dwarf_loc.file, expectation.file);
             assert_eq!(dwarf_loc.line, expectation.line);
             assert_eq!(dwarf_loc.column, expectation.column);
