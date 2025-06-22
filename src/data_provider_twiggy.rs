@@ -12,7 +12,6 @@ use addr2line::{
 };
 use hashbrown::{DefaultHashBuilder, HashMap};
 use std::{
-    fmt::Write,
     fs::File,
     hash::{DefaultHasher, Hash, Hasher},
     io::Read,
@@ -235,7 +234,7 @@ impl<'a> DataProviderTwiggy<'a> {
         }
 
         let mut raw_data = Array::new(arena, item_count);
-        let mut modules = Addr2lineModules::parse(&wasm_data).ok();
+        let modules = Addr2lineModules::parse(&wasm_data).ok();
         let mut code_location_count = 0;
 
         for item in items.iter() {
@@ -571,7 +570,7 @@ impl DataProviderTwiggy<'_> {
     }
 }
 
-impl FunctionsView for DataProviderTwiggy<'_> {
+impl<'a> FunctionsView for DataProviderTwiggy<'a> {
     fn set_view_mode(&mut self, view_mode: ViewMode) {
         if self.view_mode == view_mode {
             return;
@@ -580,7 +579,7 @@ impl FunctionsView for DataProviderTwiggy<'_> {
         self.view_mode = view_mode;
     }
 
-    fn set_filter<'a>(&mut self, filter: Filter<'a>) {
+    fn set_filter<'b>(&mut self, filter: Filter<'b>) {
         self.recompute_index_map(filter);
     }
 
@@ -596,7 +595,7 @@ impl FunctionsView for DataProviderTwiggy<'_> {
         &self.raw_data[idx].debug_info.locals
     }
 
-    fn get_ops_at(&self, idx: usize) -> &[FunctionOp] {
+    fn get_ops_at(&self, idx: usize) -> &[FunctionOp<'a>] {
         &self.raw_data[idx].debug_info.function_ops
     }
 

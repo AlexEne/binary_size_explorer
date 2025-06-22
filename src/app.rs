@@ -1,12 +1,11 @@
+use crate::arena::Arena;
 use crate::arena::memory::GB;
-use crate::arena::scratch::scratch_arena;
-use crate::arena::{self, Arena};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use crate::memory_viewer::MemoryViewer;
-use egui::{CollapsingHeader, ScrollArea, TextBuffer, Vec2b};
+use egui::{CollapsingHeader, ScrollArea, Vec2b};
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
