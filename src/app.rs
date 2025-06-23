@@ -1,5 +1,6 @@
-use crate::arena::Arena;
 use crate::arena::memory::GB;
+use crate::arena::scratch::scratch_arena;
+use crate::arena::{self, Arena};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
@@ -11,6 +12,7 @@ use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::ptr::write;
 
 #[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 pub enum FileType {
@@ -59,23 +61,110 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             TabContent::SectionsBinaryViewer { file_index } => {
                 if let Some(data_provider) = &self.file_entries[*file_index].data_provider {
                     ScrollArea::both().auto_shrink(Vec2b::FALSE).show(ui, |ui| {
-                        for (idx, section) in data_provider.sections.iter().enumerate() {
-                            let section_name = section.name;
-                            let section_raw_data = &data_provider.wasm_data
-                                [section.offset..(section.offset + section.length)];
+                        let wasm_data = &data_provider.wasm_data2;
 
-                            let header_response = CollapsingHeader::new(section_name)
-                                .id_salt(idx)
-                                .show(ui, |ui| {
-                                    MemoryViewer::show(ui, section_raw_data);
-                                })
-                                .header_response;
+                        let scratch = scratch_arena(&[]);
+                        let mut buffer = arena::string::String::new(&scratch, 1024);
 
-                            if header_response.hovered() {
-                                header_response
-                                    .show_tooltip_text(format!("Size: {}", section.length));
+                        ui.collapsing("Types Section", |ui| {
+                            for ty in wasm_data.types_section.types.iter() {
+                                use std::fmt::Write;
+                                buffer.clear();
+
+                                let params = ty.params();
+                                let results = ty.results();
+
+                                _ = write!(&mut buffer, "fn (");
+
+                                for (idx, param) in params.iter().enumerate() {
+                                    if idx == params.len() - 1 {
+                                        _ = write!(&mut buffer, "{}", param);
+                                    } else {
+                                        _ = write!(&mut buffer, "{}, ", param);
+                                    }
+                                }
+
+                                _ = write!(&mut buffer, ") -> [");
+
+                                for (idx, result) in results.iter().enumerate() {
+                                    if idx == results.len() - 1 {
+                                        _ = write!(&mut buffer, "{}", result);
+                                    } else {
+                                        _ = write!(&mut buffer, "{}, ", result);
+                                    }
+                                }
+
+                                _ = write!(&mut buffer, "]");
+
+                                ui.label(buffer.as_str());
                             }
-                        }
+                        });
+
+                        ui.collapsing("Functions Section", |ui| {
+                            ScrollArea::vertical().show_rows(
+                                ui,
+                                20.0,
+                                wasm_data.functions_section.function_count,
+                                |ui, indices| {
+                                    for idx in indices {
+                                        use std::fmt::Write;
+                                        buffer.clear();
+
+                                        let func_type_idx =
+                                            wasm_data.functions_section.function_types[idx];
+                                        let func_type =
+                                            &wasm_data.types_section.types[func_type_idx];
+                                        let func_name =
+                                            wasm_data.functions_section.function_names[idx];
+
+                                        let params = func_type.params();
+                                        let results = func_type.results();
+
+                                        _ = write!(&mut buffer, "fn {}(", func_name);
+
+                                        for (idx, param) in params.iter().enumerate() {
+                                            if idx == params.len() - 1 {
+                                                _ = write!(&mut buffer, "{}", param);
+                                            } else {
+                                                _ = write!(&mut buffer, "{}, ", param);
+                                            }
+                                        }
+
+                                        _ = write!(&mut buffer, ") -> [");
+
+                                        for (idx, result) in results.iter().enumerate() {
+                                            if idx == results.len() - 1 {
+                                                _ = write!(&mut buffer, "{}", result);
+                                            } else {
+                                                _ = write!(&mut buffer, "{}, ", result);
+                                            }
+                                        }
+
+                                        _ = write!(&mut buffer, "]");
+
+                                        ui.label(buffer.as_str());
+                                    }
+                                },
+                            );
+                        });
+
+                        // for (idx, section) in data_provider.sections.iter().enumerate() {
+                        //     let section_name = section.name;
+                        //     let section_raw_data = &data_provider.wasm_data
+                        //         [section.offset..(section.offset + section.length)];
+
+                        //     let header_response = CollapsingHeader::new(section_name)
+                        //         .id_salt(idx)
+                        //         .show(ui, |ui| {
+                        //             MemoryViewer::show(ui, section_raw_data);
+                        //         })
+                        //         .header_response;
+
+                        //     if header_response.hovered() {
+                        //         header_response
+                        //             .show_tooltip_text(format!("Size: {}", section.length));
+                        //     }
+                        // }
                     });
                 }
             }

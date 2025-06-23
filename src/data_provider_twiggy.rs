@@ -5,6 +5,7 @@ use crate::{
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
     },
     gui::tree_view::{TreeItemState, TreeState},
+    wasm::parser::WasmData,
 };
 use addr2line::{
     LookupResult,
@@ -56,6 +57,8 @@ pub struct DataProviderTwiggy<'a> {
     /// The raw binary data of the loaded wasm file.
     pub wasm_data: &'a [u8],
 
+    pub wasm_data2: WasmData<'a>,
+
     pub view_mode: ViewMode,
     pub raw_data: Array<'a, FunctionData<'a>>,
 
@@ -100,6 +103,8 @@ impl<'a> DataProviderTwiggy<'a> {
             wasm_data
         };
 
+        let wasm_data2 = WasmData::from_bytes(arena, wasm_data);
+
         let mut items = twiggy_parser::parse(&wasm_data).unwrap();
         items.compute_retained_sizes();
         let mut id_to_idx = HashMap::new();
@@ -108,7 +113,7 @@ impl<'a> DataProviderTwiggy<'a> {
 
         let mut code_section_start: u64 = 0;
 
-        let mut sections = Array::new(arena, 128 * 1024);
+        let mut sections = Array::new(arena, 248 * 1024);
         let mut offset = 0;
         while offset < wasm_data.len() {
             let chunck = parser
@@ -405,6 +410,7 @@ impl<'a> DataProviderTwiggy<'a> {
 
         let mut provider = DataProviderTwiggy {
             wasm_data,
+            wasm_data2,
             view_mode: ViewMode::Tops,
             raw_data,
             total_size: 0,
