@@ -1,6 +1,12 @@
-use wasmparser::{Encoding, FuncType, FunctionBody};
+use std::{collections::HashSet, hash::DefaultHasher};
 
-use crate::arena::{Arena, array::Array};
+use petgraph::visit;
+use wasmparser::{Encoding, FuncType, FunctionBody, Operator};
+
+use crate::{
+    arena::{Arena, array::Array, string::String},
+    gui::tree_view::TreeState,
+};
 
 pub struct WasmData<'a> {
     pub bytes: &'a [u8],
@@ -26,8 +32,11 @@ impl<'a> WasmData<'a> {
             function_types: Array::new(arena, 0),
             function_names: Array::new(arena, 0),
             function_bodies: Array::new(arena, 0),
+            function_called: Array::new(arena, 0),
             function_count: 0,
         };
+
+        let mut root_idx = 0;
 
         for section in wasmparser::Parser::new(0).parse_all(bytes) {
             let payload = match section {
@@ -105,14 +114,16 @@ impl<'a> WasmData<'a> {
                             }
                         };
 
-                        table.
+                        // table.
                     }
                 }
                 // wasmparser::Payload::MemorySection(section_limited) => todo!(),
                 // wasmparser::Payload::TagSection(section_limited) => todo!(),
                 // wasmparser::Payload::GlobalSection(section_limited) => todo!(),
                 // wasmparser::Payload::ExportSection(section_limited) => todo!(),
-                // wasmparser::Payload::StartSection { func, range } => todo!(),
+                wasmparser::Payload::StartSection { func, .. } => {
+                    root_idx = func;
+                }
                 // wasmparser::Payload::ElementSection(section_limited) => todo!(),
                 // wasmparser::Payload::DataCountSection { count, range } => todo!(),
                 // wasmparser::Payload::DataSection(section_limited) => todo!(),
@@ -166,9 +177,12 @@ impl<'a> WasmData<'a> {
                                                 ),
                                             };
 
+                                            let demangled_name = demangle(arena, naming.name);
+                                            process_function_name(arena, demangled_name);
+
                                             functions_section.function_names
                                                 [naming.index as usize - imports_count] =
-                                                naming.name;
+                                                demangled_name;
                                         }
                                     }
                                     // wasmparser::Name::Local(section_limited) => todo!(),
@@ -199,12 +213,81 @@ impl<'a> WasmData<'a> {
             }
         }
 
-        Self {
+        // Extract symbol dependencies
+        for idx in 0..functions_section.function_bodies.len() {
+            let function_body = &functions_section.function_bodies[idx];
+
+            // TODO: (bruno) what is the minimum instruction size here? surely it's not 1 byte
+            let dependants = Array::new(arena, function_body.as_bytes().len());
+
+            let operators_reader = match function_body.get_operators_reader() {
+                Ok(operators_reader) => operators_reader,
+                Err(err) => {
+                    panic!("Failed to parse function operators with error {}", err)
+                }
+            };
+
+            while !operators_reader.eof() {
+                let operator = match operators_reader.read() {
+                    Ok(operator) => operator,
+                    Err(err) => {
+                        panic!("Failed to parse function operator with error {}", err)
+                    }
+                };
+
+                match operator {
+                    Operator::Call { function_index } => {
+                        dependants.push(function_index as usize);
+                    }
+                    // Operator::CallIndirect { type_index, table_index } => todo!(),
+                    _ => {}
+                }
+            }
+
+            dependants.shrink_to_fit();
+            functions_section.function_called.push(dependants);
+        }
+
+        let wasm_data = Self {
             bytes,
             version,
             types_section,
             functions_section,
-        }
+        };
+
+        let dominators = petgraph::algo::dominators::simple_fast(&wasm_data, root_idx as usize);
+
+        println!("{:?}", dominators);
+
+        wasm_data
+    }
+}
+
+impl<'a> visit::GraphBase for WasmData<'a> {
+    type EdgeId = ();
+
+    type NodeId = usize;
+}
+
+impl<'a> visit::Visitable for WasmData<'a> {
+    type Map = HashSet<usize>;
+
+    fn visit_map(self: &Self) -> Self::Map {
+        HashSet::with_capacity(self.functions_section.function_count)
+    }
+
+    fn reset_map(self: &Self, map: &mut Self::Map) {
+        map.clear();
+    }
+}
+
+impl<'a, 'b> visit::IntoNeighbors for &'b WasmData<'a> {
+    type Neighbors = std::vec::IntoIter<usize>;
+
+    fn neighbors(self, a: Self::NodeId) -> Self::Neighbors {
+        let mut neighbors = Vec::with_capacity(self.functions_section.function_called[a].len());
+        neighbors.extend_from_slice(self.functions_section.function_called[a].as_slice());
+        neighbors.into_iter()
     }
 }
 
@@ -212,13 +295,60 @@ pub struct TypeSection<'a> {
     pub types: Array<'a, FuncType>,
 }
 
+pub struct FunctionNode {
+    pub parent: usize,
+    pub first_child: usize,
+    pub last_sibling: usize,
+}
+
 pub struct FunctionSection<'a> {
     pub function_types: Array<'a, usize>,
     pub function_names: Array<'a, &'a str>,
     pub function_bodies: Array<'a, FunctionBody<'a>>,
+    pub function_called: Array<'a, Array<'a, usize>>,
     pub function_count: usize,
 }
 
 pub struct TableSection<'a> {
     pub tables: Array<'a, usize>,
+}
+
+// pub struct TreeArray<'a> {
+//     pub indices: Array<'a>,
+// }
+
+// impl<'a> TreeArray<'a> {
+//     pub fn new(arena: &'a Arena, capacity: usize) -> Self {
+
+//     }
+
+//     pub fn push_root(&mut self, index: usize) {
+//         self.indices.push(item);
+//     }
+
+//     #[inline]
+//     pub fn push(&mut self, parent_position: usize, ) {
+
+//     }
+// }
+
+fn demangle<'a>(arena: &'a Arena, name: &str) -> &'a str {
+    use std::fmt::Write;
+
+    let demanged_name = rustc_demangle::demangle(name);
+
+    let mut demangled_name = String::new(arena, name.len() * 2);
+    _ = write!(&mut demangled_name, "{}", demanged_name);
+    demangled_name.shrink_to_fit();
+    demangled_name.to_str()
+}
+
+fn process_function_name<'a>(arena: &'a Arena, demangled_name: &'a str) {
+    let mut segments = Array::new(arena, 1024);
+    for segment in demangled_name.split("::") {
+        println!("Segment: {segment}");
+        segments.push(segment);
+    }
+
+    segments.shrink_to_fit();
 }

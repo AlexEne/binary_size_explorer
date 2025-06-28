@@ -59,6 +59,9 @@ impl egui_dock::TabViewer for TabViewer<'_> {
             }
 
             TabContent::SectionsBinaryViewer { file_index } => {
+                if self.file_entries.len() <= *file_index {
+                    return;
+                };
                 if let Some(data_provider) = &self.file_entries[*file_index].data_provider {
                     ScrollArea::both().auto_shrink(Vec2b::FALSE).show(ui, |ui| {
                         let wasm_data = &data_provider.wasm_data2;
@@ -543,16 +546,18 @@ impl TemplateApp {
                     self.file_entries.clear(); // Not supporting multiple for now.
 
                     let arena = Arena::new(16 * GB);
-                    let data_provider = Some(DataProviderTwiggy::from_path(
+                    let Ok(data_provider) = DataProviderTwiggy::from_path(
                         unsafe { std::mem::transmute(&arena) },
                         &path,
-                    ));
+                    ) else {
+                        return;
+                    };
 
                     self.file_entries.push(FileEntry {
                         path,
                         ty: FileType::Wasm,
                         arena,
-                        data_provider,
+                        data_provider: Some(data_provider),
                     });
 
                     // Reset the tree.
@@ -673,17 +678,20 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
                             for (path, ty) in files {
                                 let arena = Arena::new(16 * GB);
                                 let data_provider = match ty {
-                                    FileType::Wasm => Some(DataProviderTwiggy::from_path(
+                                    FileType::Wasm => DataProviderTwiggy::from_path(
                                         unsafe { std::mem::transmute(&arena) },
                                         &path,
-                                    )),
+                                    ),
+                                };
+                                let Ok(data_provider) = data_provider else {
+                                    continue;
                                 };
 
                                 fe.push(FileEntry {
                                     path,
                                     ty,
                                     arena,
-                                    data_provider,
+                                    data_provider: Some(data_provider),
                                 });
                             }
 

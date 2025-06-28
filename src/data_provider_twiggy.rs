@@ -80,11 +80,13 @@ pub struct DataProviderTwiggy<'a> {
 
 impl<'a> DataProviderTwiggy<'a> {
     #[profiling::function]
-    pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Self {
+    pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Result<Self, ()> {
         let start = Instant::now();
 
         let wasm_data: &'a [u8] = {
-            let mut file = File::open(path).unwrap();
+            let Ok(mut file) = File::open(path) else {
+                return Err(());
+            };
             let size = file
                 .metadata()
                 .map(|m| m.len() as usize)
@@ -426,7 +428,7 @@ impl<'a> DataProviderTwiggy<'a> {
 
         println!("Total time {}", (Instant::now() - start).as_secs_f32());
 
-        provider
+        Ok(provider)
     }
 }
 
