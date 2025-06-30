@@ -8,6 +8,7 @@ use crate::{
     data_provider::{Filter, FunctionsView, ViewMode},
     data_provider_twiggy::DataProviderTwiggy,
     gui::tree_view::TreeView,
+    wasm::parser::WasmData,
 };
 use core::str;
 
@@ -208,131 +209,171 @@ impl FunctionsExplorer {
     }
 
     fn show_dominators(&mut self, ui: &mut egui::Ui, dominator_view: &mut DataProviderTwiggy) {
-        let raw_data = &dominator_view.raw_data;
-        let state = &mut dominator_view.dominator_view_tree_state;
+        let data = &dominator_view.wasm_data2;
 
-        TreeView.body(ui, state, 20.0, |ui, item| {
-            if item.selected {
-                self.selected_row = Some(item.index);
-            }
+        if data.functions_section.function_groups.is_empty() {
+            return;
+        }
 
-            let function_properties = &raw_data[item.index].function_property;
-            let name = function_properties.name();
-            let retained_size_percent = function_properties.retained_size_percent;
+        fn show_item<'a>(ui: &mut egui::Ui, data: &WasmData<'a>, group_idx: usize) {
+            ui.collapsing(
+                data.functions_section.function_groups[group_idx].name,
+                |ui| {
+                    let mut cur_child =
+                        data.functions_section.function_groups[group_idx].first_child;
 
-            let available = ui.available_rect_before_wrap();
+                    while let Some(child_group_idx) = cur_child {
+                        show_item(ui, data, child_group_idx);
+                        // ui.label(data.functions_section.function_groups[child_group_idx].name);
 
-            const PERCENTAGE_WIDTH: f32 = 50.0;
-            const PERCENTAGE_BAR_HEIGHT: f32 = 2.0;
-
-            let percentage_text_pos = available.min;
-            let percentage_text: WidgetText = format!("{:.2}%", retained_size_percent).into();
-            let percentage_galley = percentage_text.into_galley(
-                ui,
-                Some(TextWrapMode::Extend),
-                PERCENTAGE_WIDTH,
-                TextStyle::Button,
-            );
-
-            let text_pos = available.min + vec2(PERCENTAGE_WIDTH, 0.0);
-            let wrap_width = available.right() - text_pos.x;
-
-            // TODO: build galley from scratch?
-            let text: WidgetText = name.into();
-            let symbol_galley = text.into_galley(
-                ui,
-                Some(TextWrapMode::Extend),
-                wrap_width,
-                TextStyle::Button,
-            );
-
-            let button_padding = ui.spacing().button_padding;
-            let text_max_x = text_pos.x + symbol_galley.size().x;
-            let desired_width = text_max_x + button_padding.x - available.left();
-            let desired_size = vec2(
-                desired_width,
-                symbol_galley.size().y + 2.0 * button_padding.y + 2.0 * PERCENTAGE_BAR_HEIGHT,
-            );
-
-            let (_, rect) = ui.allocate_space(desired_size);
-
-            // Center text element on the vertical axis
-            let percentage_text_pos = pos2(
-                percentage_text_pos.x,
-                available.center().y - percentage_galley.size().y / 2.0,
-            );
-            let symbol_text_pos = pos2(
-                text_pos.x,
-                available.center().y - symbol_galley.size().y / 2.0,
-            );
-
-            let percentage_response = ui.interact(
-                Rect {
-                    min: percentage_text_pos,
-                    max: percentage_text_pos + percentage_galley.size(),
+                        cur_child =
+                            data.functions_section.function_groups[child_group_idx].next_sibling;
+                    }
                 },
-                Id::new(name),
-                Sense::hover(),
             );
+        }
 
-            let visuals = ui
-                .style()
-                .interact_selectable(&item.response, item.selected);
-
-            // Percentage label
-            ui.painter()
-                .galley(percentage_text_pos, percentage_galley, visuals.text_color());
-            ui.painter().add(Shape::Rect(RectShape::filled(
-                Rect {
-                    min: pos2(
-                        percentage_text_pos.x,
-                        rect.min.y + rect.height() - PERCENTAGE_BAR_HEIGHT,
-                    ),
-                    max: pos2(
-                        percentage_text_pos.x + (retained_size_percent / 100.0) * PERCENTAGE_WIDTH,
-                        rect.min.y + rect.height(),
-                    ),
-                },
-                0.0,
-                Color32::GREEN,
-            )));
-
-            // Percentage tooltip
-            if percentage_response.hovered() {
-                let scratch = scratch_arena(&[]);
-                let mut buffer: Array<'_, u8> = Array::new(&scratch, 1024);
-
-                // TODO: (bruno) probably should just use auto-layout here
-                use std::fmt::Write;
-                _ = writeln!(
-                    &mut buffer,
-                    "Retained size: {:5.2}(MB)",
-                    function_properties.retained_size_bytes as f32 / (1024.0 * 1024.0)
-                );
-                _ = writeln!(
-                    &mut buffer,
-                    "Self size: {:9.2}(MB)",
-                    function_properties.shallow_size_bytes as f32 / (1024.0 * 1024.0)
-                );
-                _ = writeln!(
-                    &mut buffer,
-                    "Retained: {:10.2} (%)",
-                    function_properties.retained_size_percent
-                );
-                _ = write!(
-                    &mut buffer,
-                    "Self: {:14.2} (%)",
-                    function_properties.shallow_size_percent
-                );
-                percentage_response.show_tooltip_ui(|ui| {
-                    ui.monospace(std::str::from_utf8(&buffer).unwrap());
-                });
+        for i in 0..data.functions_section.function_groups.len() {
+            if data.functions_section.function_groups[i].parent.is_none() {
+                show_item(ui, data, i);
             }
+        }
 
-            // Symbol label
-            ui.painter()
-                .galley(symbol_text_pos, symbol_galley, visuals.text_color());
-        });
+        // ui.collapsing(dbg!(data.functions_section.function_groups[2].name), |ui| {
+        //     let mut cur_child = data.functions_section.function_groups[2].first_child;
+
+        //     while let Some(child_group_idx) = cur_child {
+        //         ui.label(data.functions_section.function_groups[child_group_idx].name);
+
+        //         cur_child = data.functions_section.function_groups[child_group_idx].next_sibling;
+        //     }
+        // });
+
+        // let raw_data = &dominator_view.raw_data;
+        // let state = &mut dominator_view.dominator_view_tree_state;
+
+        // TreeView.body(ui, state, 20.0, |ui, item| {
+        //     if item.selected {
+        //         self.selected_row = Some(item.index);
+        //     }
+
+        //     let function_properties = &raw_data[item.index].function_property;
+        //     let name = function_properties.name();
+        //     let retained_size_percent = function_properties.retained_size_percent;
+
+        //     let available = ui.available_rect_before_wrap();
+
+        //     const PERCENTAGE_WIDTH: f32 = 50.0;
+        //     const PERCENTAGE_BAR_HEIGHT: f32 = 2.0;
+
+        //     let percentage_text_pos = available.min;
+        //     let percentage_text: WidgetText = format!("{:.2}%", retained_size_percent).into();
+        //     let percentage_galley = percentage_text.into_galley(
+        //         ui,
+        //         Some(TextWrapMode::Extend),
+        //         PERCENTAGE_WIDTH,
+        //         TextStyle::Button,
+        //     );
+
+        //     let text_pos = available.min + vec2(PERCENTAGE_WIDTH, 0.0);
+        //     let wrap_width = available.right() - text_pos.x;
+
+        //     // TODO: build galley from scratch?
+        //     let text: WidgetText = name.into();
+        //     let symbol_galley = text.into_galley(
+        //         ui,
+        //         Some(TextWrapMode::Extend),
+        //         wrap_width,
+        //         TextStyle::Button,
+        //     );
+
+        //     let button_padding = ui.spacing().button_padding;
+        //     let text_max_x = text_pos.x + symbol_galley.size().x;
+        //     let desired_width = text_max_x + button_padding.x - available.left();
+        //     let desired_size = vec2(
+        //         desired_width,
+        //         symbol_galley.size().y + 2.0 * button_padding.y + 2.0 * PERCENTAGE_BAR_HEIGHT,
+        //     );
+
+        //     let (_, rect) = ui.allocate_space(desired_size);
+
+        //     // Center text element on the vertical axis
+        //     let percentage_text_pos = pos2(
+        //         percentage_text_pos.x,
+        //         available.center().y - percentage_galley.size().y / 2.0,
+        //     );
+        //     let symbol_text_pos = pos2(
+        //         text_pos.x,
+        //         available.center().y - symbol_galley.size().y / 2.0,
+        //     );
+
+        //     let percentage_response = ui.interact(
+        //         Rect {
+        //             min: percentage_text_pos,
+        //             max: percentage_text_pos + percentage_galley.size(),
+        //         },
+        //         Id::new(name),
+        //         Sense::hover(),
+        //     );
+
+        //     let visuals = ui
+        //         .style()
+        //         .interact_selectable(&item.response, item.selected);
+
+        //     // Percentage label
+        //     ui.painter()
+        //         .galley(percentage_text_pos, percentage_galley, visuals.text_color());
+        //     ui.painter().add(Shape::Rect(RectShape::filled(
+        //         Rect {
+        //             min: pos2(
+        //                 percentage_text_pos.x,
+        //                 rect.min.y + rect.height() - PERCENTAGE_BAR_HEIGHT,
+        //             ),
+        //             max: pos2(
+        //                 percentage_text_pos.x + (retained_size_percent / 100.0) * PERCENTAGE_WIDTH,
+        //                 rect.min.y + rect.height(),
+        //             ),
+        //         },
+        //         0.0,
+        //         Color32::GREEN,
+        //     )));
+
+        //     // Percentage tooltip
+        //     if percentage_response.hovered() {
+        //         let scratch = scratch_arena(&[]);
+        //         let mut buffer: Array<'_, u8> = Array::new(&scratch, 1024);
+
+        //         // TODO: (bruno) probably should just use auto-layout here
+        //         use std::fmt::Write;
+        //         _ = writeln!(
+        //             &mut buffer,
+        //             "Retained size: {:5.2}(MB)",
+        //             function_properties.retained_size_bytes as f32 / (1024.0 * 1024.0)
+        //         );
+        //         _ = writeln!(
+        //             &mut buffer,
+        //             "Self size: {:9.2}(MB)",
+        //             function_properties.shallow_size_bytes as f32 / (1024.0 * 1024.0)
+        //         );
+        //         _ = writeln!(
+        //             &mut buffer,
+        //             "Retained: {:10.2} (%)",
+        //             function_properties.retained_size_percent
+        //         );
+        //         _ = write!(
+        //             &mut buffer,
+        //             "Self: {:14.2} (%)",
+        //             function_properties.shallow_size_percent
+        //         );
+        //         percentage_response.show_tooltip_ui(|ui| {
+        //             ui.monospace(std::str::from_utf8(&buffer).unwrap());
+        //         });
+        //     }
+
+        //     // Symbol label
+        //     ui.painter()
+        //         .galley(symbol_text_pos, symbol_galley, visuals.text_color());
+        // });
     }
 }
 

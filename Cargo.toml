@@ -27,7 +27,7 @@ hashbrown = { version = "0.15", default-features = false, features = [
     'rustc-dep-of-std',
 ] }
 petgraph = "0.6.2"
-rustc-demangle = "0.1.21"
+rustc-demangle = "0.1.25"
 serde = { version = "1.0.219", features = ["derive"] }
 twiggy-analyze = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
 twiggy-opt = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }

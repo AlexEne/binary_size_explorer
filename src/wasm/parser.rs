@@ -1,12 +1,10 @@
-use std::{collections::HashSet, hash::DefaultHasher};
+use std::{collections::HashSet, hash::DefaultHasher, usize};
 
-use petgraph::visit;
+use hashbrown::{DefaultHashBuilder, HashMap};
+use petgraph::{algo::dominators::Dominators, visit};
 use wasmparser::{Encoding, FuncType, FunctionBody, Operator};
 
-use crate::{
-    arena::{Arena, array::Array, string::String},
-    gui::tree_view::TreeState,
-};
+use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String};
 
 pub struct WasmData<'a> {
     pub bytes: &'a [u8],
@@ -19,9 +17,12 @@ pub struct WasmData<'a> {
 
     /// Functions section
     pub functions_section: FunctionSection<'a>,
+
+    pub functions_dominators: Option<Dominators<usize>>,
 }
 
 impl<'a> WasmData<'a> {
+    #[profiling::function]
     pub fn from_bytes(arena: &'a Arena, bytes: &'a [u8]) -> Self {
         let mut version = 0;
         let mut types_section = TypeSection {
@@ -33,10 +34,17 @@ impl<'a> WasmData<'a> {
             function_names: Array::new(arena, 0),
             function_bodies: Array::new(arena, 0),
             function_called: Array::new(arena, 0),
+            function_groups: Array::new(arena, 0),
             function_count: 0,
         };
 
         let mut root_idx = 0;
+        let mut total = 0;
+
+        let scratch = scratch_arena(&[arena]);
+        let mut function_group_name_lookup =
+            HashMap::<&str, usize, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
+        let mut function_groups = Array::new(arena, 0);
 
         for section in wasmparser::Parser::new(0).parse_all(bytes) {
             let payload = match section {
@@ -131,12 +139,36 @@ impl<'a> WasmData<'a> {
                     functions_section.function_bodies = Array::new(arena, count as usize);
 
                     functions_section.function_names = Array::new(arena, count as usize);
+                    functions_section.function_called = Array::new(arena, count as usize);
                     for _ in 0..count {
                         functions_section.function_names.push("");
                     }
+
+                    // TODO: (bruno) something better than 5 * count!
+                    function_groups = Array::new(arena, 5 * count as usize);
+                    function_group_name_lookup =
+                        HashMap::with_capacity_in(5 * count as usize, &scratch);
+
                     functions_section.function_count = count as usize;
                 }
                 wasmparser::Payload::CodeSectionEntry(function_body) => {
+                    let mut locals_reader = function_body.get_locals_reader().unwrap();
+                    for i in 0..locals_reader.get_count() {
+                        if locals_reader.read().unwrap().0 != 0 {
+                            total += 1;
+                        }
+                    }
+
+                    let mut operators_reder = function_body.get_operators_reader().unwrap();
+                    while !operators_reder.eof() {
+                        match operators_reder.read().unwrap() {
+                            wasmparser::Operator::Call { .. } => {
+                                total += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+
                     functions_section.function_bodies.push(function_body);
                 }
                 // wasmparser::Payload::ModuleSection {
@@ -157,6 +189,7 @@ impl<'a> WasmData<'a> {
                 // wasmparser::Payload::ComponentImportSection(import_section_reader) => todo!(),
                 // wasmparser::Payload::ComponentExportSection(section_limited) => todo!(),
                 wasmparser::Payload::CustomSection(custom_section_reader) => {
+                    println!("Section: {}", custom_section_reader.name());
                     match custom_section_reader.as_known() {
                         wasmparser::KnownCustom::Name(name_section_reader) => {
                             for name in name_section_reader.into_iter() {
@@ -177,8 +210,90 @@ impl<'a> WasmData<'a> {
                                                 ),
                                             };
 
-                                            let demangled_name = demangle(arena, naming.name);
-                                            process_function_name(arena, demangled_name);
+                                            // if naming.name.contains(":main:") {
+                                            //     root_idx = naming.index;
+                                            // }
+
+                                            // if naming.name.contains("core::slice") {
+                                            //     println!("Core slice");
+                                            // }
+
+                                            let demangled_name = demangled_name(arena, naming.name);
+
+                                            let group_names = split_modules2(arena, demangled_name);
+                                            let group_names_count = group_names.len();
+                                            if group_names_count > 0 {
+                                                let mut parent_group_idx = None;
+
+                                                for i in 0..group_names_count {
+                                                    let group_idx = match function_group_name_lookup
+                                                        .get(group_names[i])
+                                                        .copied()
+                                                    {
+                                                        Some(group_idx) => group_idx,
+                                                        None => {
+                                                            let new_group_idx =
+                                                                function_groups.len();
+                                                            function_groups.push(FunctionGroup {
+                                                                name: group_names[i],
+                                                                fn_index: None,
+                                                                parent: parent_group_idx,
+                                                                next_sibling: None,
+                                                                first_child: None,
+                                                                last_child: None,
+                                                            });
+                                                            function_group_name_lookup.insert(
+                                                                group_names[i],
+                                                                new_group_idx,
+                                                            );
+
+                                                            if let Some(parent_group_idx) =
+                                                                parent_group_idx
+                                                            {
+                                                                if let Some(last_child_idx) =
+                                                                    function_groups
+                                                                        [parent_group_idx]
+                                                                        .last_child
+                                                                {
+                                                                    function_groups
+                                                                        [last_child_idx]
+                                                                        .next_sibling =
+                                                                        Some(new_group_idx);
+
+                                                                    function_groups
+                                                                        [parent_group_idx]
+                                                                        .last_child =
+                                                                        Some(new_group_idx);
+                                                                } else {
+                                                                    function_groups
+                                                                        [parent_group_idx]
+                                                                        .first_child =
+                                                                        Some(new_group_idx);
+                                                                    function_groups
+                                                                        [parent_group_idx]
+                                                                        .last_child =
+                                                                        Some(new_group_idx);
+                                                                }
+                                                            }
+
+                                                            new_group_idx
+                                                        }
+                                                    };
+
+                                                    if i == group_names_count - 1 {
+                                                        function_groups[group_idx].fn_index = Some(
+                                                            naming.index as usize - imports_count,
+                                                        );
+                                                    }
+
+                                                    parent_group_idx = Some(group_idx);
+                                                }
+                                            }
+
+                                            println!(
+                                                "Functio name {} {}",
+                                                naming.index, demangled_name
+                                            );
 
                                             functions_section.function_names
                                                 [naming.index as usize - imports_count] =
@@ -190,7 +305,19 @@ impl<'a> WasmData<'a> {
                                     // wasmparser::Name::Type(section_limited) => todo!(),
                                     // wasmparser::Name::Table(section_limited) => todo!(),
                                     // wasmparser::Name::Memory(section_limited) => todo!(),
-                                    // wasmparser::Name::Global(section_limited) => todo!(),
+                                    wasmparser::Name::Global(name_map) => {
+                                        for naming in name_map.into_iter().skip(imports_count) {
+                                            let naming = match naming {
+                                                Ok(naming) => naming,
+                                                Err(err) => panic!(
+                                                    "Failed to parse function name with error {}",
+                                                    err
+                                                ),
+                                            };
+
+                                            println!("Global name {}", naming.name);
+                                        }
+                                    }
                                     // wasmparser::Name::Element(section_limited) => todo!(),
                                     // wasmparser::Name::Data(section_limited) => todo!(),
                                     // wasmparser::Name::Field(section_limited) => todo!(),
@@ -199,6 +326,9 @@ impl<'a> WasmData<'a> {
                                     _ => {}
                                 }
                             }
+                        }
+                        wasmparser::KnownCustom::Unknown => {
+                            println!("Section {}", custom_section_reader.name());
                         }
                         _ => {}
                     }
@@ -213,14 +343,17 @@ impl<'a> WasmData<'a> {
             }
         }
 
+        functions_section.function_groups = function_groups;
+        // function_groups.shrink_to_fit();
+
         // Extract symbol dependencies
         for idx in 0..functions_section.function_bodies.len() {
             let function_body = &functions_section.function_bodies[idx];
 
             // TODO: (bruno) what is the minimum instruction size here? surely it's not 1 byte
-            let dependants = Array::new(arena, function_body.as_bytes().len());
+            let mut dependants = Array::new(arena, function_body.as_bytes().len());
 
-            let operators_reader = match function_body.get_operators_reader() {
+            let mut operators_reader = match function_body.get_operators_reader() {
                 Ok(operators_reader) => operators_reader,
                 Err(err) => {
                     panic!("Failed to parse function operators with error {}", err)
@@ -237,7 +370,9 @@ impl<'a> WasmData<'a> {
 
                 match operator {
                     Operator::Call { function_index } => {
-                        dependants.push(function_index as usize);
+                        if function_index as usize >= imports_count {
+                            dependants.push(function_index as usize - imports_count);
+                        }
                     }
                     // Operator::CallIndirect { type_index, table_index } => todo!(),
                     _ => {}
@@ -248,18 +383,43 @@ impl<'a> WasmData<'a> {
             functions_section.function_called.push(dependants);
         }
 
-        let wasm_data = Self {
+        let mut wasm_data = Self {
             bytes,
             version,
             types_section,
             functions_section,
+            functions_dominators: None,
         };
 
-        let dominators = petgraph::algo::dominators::simple_fast(&wasm_data, root_idx as usize);
+        let dominators = petgraph::algo::dominators::simple_fast(&wasm_data, usize::MAX);
 
-        println!("{:?}", dominators);
+        // for dom in dominators.immediately_dominated_by(dominators.root()) {
+        //     println!("{:?}", dom);
+        // }
+
+        // print(&wasm_data, dominators.root(), &dominators, 0);
+
+        wasm_data.functions_dominators = Some(dominators);
 
         wasm_data
+    }
+}
+
+fn print<'a>(data: &WasmData<'a>, node: usize, dominators: &Dominators<usize>, indent: usize) {
+    for _ in 0..indent {
+        print!("\t");
+    }
+
+    if node != usize::MAX {
+        println!("{}", data.functions_section.function_names[node]);
+    } else {
+        println!("root");
+    }
+
+    for child in dominators.immediately_dominated_by(node) {
+        if node != child {
+            print(data, child, dominators, indent + 1);
+        }
     }
 }
 
@@ -285,9 +445,17 @@ impl<'a, 'b> visit::IntoNeighbors for &'b WasmData<'a> {
     type Neighbors = std::vec::IntoIter<usize>;
 
     fn neighbors(self, a: Self::NodeId) -> Self::Neighbors {
-        let mut neighbors = Vec::with_capacity(self.functions_section.function_called[a].len());
-        neighbors.extend_from_slice(self.functions_section.function_called[a].as_slice());
-        neighbors.into_iter()
+        if a == usize::MAX {
+            let mut neighbors = Vec::with_capacity(self.functions_section.function_count);
+            for i in 0..self.functions_section.function_count {
+                neighbors.push(i);
+            }
+            neighbors.into_iter()
+        } else {
+            let mut neighbors = Vec::with_capacity(self.functions_section.function_called[a].len());
+            neighbors.extend_from_slice(self.functions_section.function_called[a].as_slice());
+            neighbors.into_iter()
+        }
     }
 }
 
@@ -306,11 +474,28 @@ pub struct FunctionSection<'a> {
     pub function_names: Array<'a, &'a str>,
     pub function_bodies: Array<'a, FunctionBody<'a>>,
     pub function_called: Array<'a, Array<'a, usize>>,
+
+    pub function_groups: Array<'a, FunctionGroup<'a>>,
     pub function_count: usize,
 }
 
 pub struct TableSection<'a> {
     pub tables: Array<'a, usize>,
+}
+
+// #[derive(Clone, Copy)]
+// pub enum FunctionIndex {
+//     Group(usize),
+//     Fn(usize),
+// }
+
+pub struct FunctionGroup<'a> {
+    pub name: &'a str,
+    pub fn_index: Option<usize>,
+    pub parent: Option<usize>,
+    pub next_sibling: Option<usize>,
+    pub first_child: Option<usize>,
+    pub last_child: Option<usize>,
 }
 
 // pub struct TreeArray<'a> {
@@ -332,13 +517,15 @@ pub struct TableSection<'a> {
 //     }
 // }
 
-fn demangle<'a>(arena: &'a Arena, name: &str) -> &'a str {
+fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {
     use std::fmt::Write;
+    let demangled_symbol = rustc_demangle::demangle(name);
 
-    let demanged_name = rustc_demangle::demangle(name);
-
+    // Demangled names should be shorter, generally, but adding buffer here just in case
     let mut demangled_name = String::new(arena, name.len() * 2);
-    _ = write!(&mut demangled_name, "{}", demanged_name);
+
+    _ = write!(&mut demangled_name, "{}", demangled_symbol);
+
     demangled_name.shrink_to_fit();
     demangled_name.to_str()
 }
@@ -351,4 +538,81 @@ fn process_function_name<'a>(arena: &'a Arena, demangled_name: &'a str) {
     }
 
     segments.shrink_to_fit();
+}
+
+fn split_modules<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [&'a str] {
+    let mut modules = Array::new(arena, 128);
+
+    let mut position = 0;
+    for segment in demangled_name.split("::") {
+        println!("Segment {}", segment);
+    }
+
+    modules.shrink_to_fit();
+    modules.to_slice()
+}
+
+fn split_modules2<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [&'a str] {
+    let mut modules = Array::new(arena, 128);
+
+    let mut colon = false;
+    let mut start = 0;
+    let mut end = 0;
+    let mut ticks = 0;
+    let mut brackets = 0;
+
+    while end < demangled_name.len() {
+        match demangled_name.as_bytes()[end] {
+            b':' if brackets == 0 && ticks == 0 => {
+                if !colon {
+                    if end != start {
+                        modules.push(unsafe {
+                            str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end])
+                        });
+                    }
+
+                    colon = true;
+                }
+
+                end += 1;
+                start = end;
+            }
+            b'<' => {
+                ticks += 1;
+                end += 1;
+            }
+            b'>' => {
+                ticks -= 1;
+                end += 1;
+            }
+            b'[' => {
+                brackets += 1;
+                end += 1;
+            }
+            b']' => {
+                brackets -= 1;
+                end += 1;
+            }
+            _ => {
+                colon = false;
+                end += 1;
+            }
+        }
+    }
+
+    if start < end {
+        modules.push(unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) });
+    }
+
+    for module in modules.iter() {
+        println!("Module {}", module);
+    }
+
+    // let mut position = 0;
+    // for segment in demangled_name.split("::") {
+    //     println!("Segment {}", segment);
+    // }
+
+    modules.shrink_to_fit();
+    modules.to_slice()
 }
