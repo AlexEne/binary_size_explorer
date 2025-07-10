@@ -217,7 +217,12 @@ impl FunctionsExplorer {
 
         fn show_item<'a>(ui: &mut egui::Ui, data: &WasmData<'a>, group_idx: usize) {
             ui.collapsing(
-                data.functions_section.function_groups[group_idx].name,
+                format!(
+                    "{} - {} - {}",
+                    data.functions_section.function_groups[group_idx].name,
+                    data.functions_section.function_groups[group_idx].original_name,
+                    group_idx
+                ),
                 |ui| {
                     let mut cur_child =
                         data.functions_section.function_groups[group_idx].first_child;
@@ -230,7 +235,9 @@ impl FunctionsExplorer {
                             data.functions_section.function_groups[child_group_idx].next_sibling;
                     }
                 },
-            );
+            )
+            .header_response
+            .on_hover_text(data.functions_section.function_groups[group_idx].original_name);
         }
 
         for i in 0..data.functions_section.function_groups.len() {

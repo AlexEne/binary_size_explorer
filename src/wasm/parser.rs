@@ -1,5 +1,12 @@
-use std::{collections::HashSet, hash::DefaultHasher, usize};
+use std::{
+    collections::HashSet,
+    hash::{DefaultHasher, Hash, Hasher},
+};
 
+use gimli::{
+    AttributeValue, DW_AT_decl_file, DW_AT_decl_line, DW_AT_inline, DW_AT_linkage_name, DW_AT_name,
+    DW_INL_inlined, DW_TAG_namespace, DW_TAG_subprogram, EndianSlice, LittleEndian, UnitType,
+};
 use hashbrown::{DefaultHashBuilder, HashMap};
 use petgraph::{algo::dominators::Dominators, visit};
 use wasmparser::{Encoding, FuncType, FunctionBody, Operator};
@@ -32,6 +39,7 @@ impl<'a> WasmData<'a> {
         let mut functions_section = FunctionSection {
             function_types: Array::new(arena, 0),
             function_names: Array::new(arena, 0),
+            function_original_names: Array::new(arena, 0),
             function_bodies: Array::new(arena, 0),
             function_called: Array::new(arena, 0),
             function_groups: Array::new(arena, 0),
@@ -43,8 +51,12 @@ impl<'a> WasmData<'a> {
 
         let scratch = scratch_arena(&[arena]);
         let mut function_group_name_lookup =
+            HashMap::<u64, usize, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
+        let mut function_index_lookup =
             HashMap::<&str, usize, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
         let mut function_groups = Array::new(arena, 0);
+
+        let mut debug_sections = HashMap::new();
 
         for section in wasmparser::Parser::new(0).parse_all(bytes) {
             let payload = match section {
@@ -139,13 +151,15 @@ impl<'a> WasmData<'a> {
                     functions_section.function_bodies = Array::new(arena, count as usize);
 
                     functions_section.function_names = Array::new(arena, count as usize);
+                    functions_section.function_original_names = Array::new(arena, count as usize);
                     functions_section.function_called = Array::new(arena, count as usize);
                     for _ in 0..count {
                         functions_section.function_names.push("");
+                        functions_section.function_original_names.push("");
                     }
 
                     // TODO: (bruno) something better than 5 * count!
-                    function_groups = Array::new(arena, 5 * count as usize);
+                    function_groups = Array::new(arena, 1500 * count as usize);
                     function_group_name_lookup =
                         HashMap::with_capacity_in(5 * count as usize, &scratch);
 
@@ -218,86 +232,95 @@ impl<'a> WasmData<'a> {
                                             //     println!("Core slice");
                                             // }
 
-                                            let demangled_name = demangled_name(arena, naming.name);
+                                            // let demangled_name = demangled_name(arena, naming.name);
 
-                                            let group_names = split_modules2(arena, demangled_name);
-                                            let group_names_count = group_names.len();
-                                            if group_names_count > 0 {
-                                                let mut parent_group_idx = None;
+                                            // let group_names = split_modules2(arena, demangled_name);
+                                            // let group_names_count = group_names.len();
+                                            // if group_names_count > 0 {
+                                            //     let mut parent_group_idx = None;
 
-                                                for i in 0..group_names_count {
-                                                    let group_idx = match function_group_name_lookup
-                                                        .get(group_names[i])
-                                                        .copied()
-                                                    {
-                                                        Some(group_idx) => group_idx,
-                                                        None => {
-                                                            let new_group_idx =
-                                                                function_groups.len();
-                                                            function_groups.push(FunctionGroup {
-                                                                name: group_names[i],
-                                                                fn_index: None,
-                                                                parent: parent_group_idx,
-                                                                next_sibling: None,
-                                                                first_child: None,
-                                                                last_child: None,
-                                                            });
-                                                            function_group_name_lookup.insert(
-                                                                group_names[i],
-                                                                new_group_idx,
-                                                            );
+                                            //     for i in 0..group_names_count {
+                                            //         let group_idx = match function_group_name_lookup
+                                            //             .get(group_names[i])
+                                            //             .copied()
+                                            //         {
+                                            //             Some(group_idx) => group_idx,
+                                            //             None => {
+                                            //                 let new_group_idx =
+                                            //                     function_groups.len();
+                                            //                 function_groups.push(FunctionGroup {
+                                            //                     name: group_names[i],
+                                            //                     original_name: naming.name,
+                                            //                     fn_index: None,
+                                            //                     parent: parent_group_idx,
+                                            //                     next_sibling: None,
+                                            //                     first_child: None,
+                                            //                     last_child: None,
+                                            //                 });
+                                            //                 function_group_name_lookup.insert(
+                                            //                     group_names[i],
+                                            //                     new_group_idx,
+                                            //                 );
 
-                                                            if let Some(parent_group_idx) =
-                                                                parent_group_idx
-                                                            {
-                                                                if let Some(last_child_idx) =
-                                                                    function_groups
-                                                                        [parent_group_idx]
-                                                                        .last_child
-                                                                {
-                                                                    function_groups
-                                                                        [last_child_idx]
-                                                                        .next_sibling =
-                                                                        Some(new_group_idx);
+                                            //                 if let Some(parent_group_idx) =
+                                            //                     parent_group_idx
+                                            //                 {
+                                            //                     if let Some(last_child_idx) =
+                                            //                         function_groups
+                                            //                             [parent_group_idx]
+                                            //                             .last_child
+                                            //                     {
+                                            //                         function_groups
+                                            //                             [last_child_idx]
+                                            //                             .next_sibling =
+                                            //                             Some(new_group_idx);
 
-                                                                    function_groups
-                                                                        [parent_group_idx]
-                                                                        .last_child =
-                                                                        Some(new_group_idx);
-                                                                } else {
-                                                                    function_groups
-                                                                        [parent_group_idx]
-                                                                        .first_child =
-                                                                        Some(new_group_idx);
-                                                                    function_groups
-                                                                        [parent_group_idx]
-                                                                        .last_child =
-                                                                        Some(new_group_idx);
-                                                                }
-                                                            }
+                                            //                         function_groups
+                                            //                             [parent_group_idx]
+                                            //                             .last_child =
+                                            //                             Some(new_group_idx);
+                                            //                     } else {
+                                            //                         function_groups
+                                            //                             [parent_group_idx]
+                                            //                             .first_child =
+                                            //                             Some(new_group_idx);
+                                            //                         function_groups
+                                            //                             [parent_group_idx]
+                                            //                             .last_child =
+                                            //                             Some(new_group_idx);
+                                            //                     }
+                                            //                 }
 
-                                                            new_group_idx
-                                                        }
-                                                    };
+                                            //                 new_group_idx
+                                            //             }
+                                            //         };
 
-                                                    if i == group_names_count - 1 {
-                                                        function_groups[group_idx].fn_index = Some(
-                                                            naming.index as usize - imports_count,
-                                                        );
-                                                    }
+                                            //         if i == group_names_count - 1 {
+                                            //             function_groups[group_idx].fn_index = Some(
+                                            //                 naming.index as usize - imports_count,
+                                            //             );
+                                            //         }
 
-                                                    parent_group_idx = Some(group_idx);
-                                                }
-                                            }
+                                            //         parent_group_idx = Some(group_idx);
+                                            //     }
+                                            // }
 
-                                            println!(
-                                                "Functio name {} {}",
-                                                naming.index, demangled_name
+                                            // println!(
+                                            //     "Functio name {} {}",
+                                            //     naming.index, demangled_name
+                                            // );
+
+                                            // functions_section.function_names
+                                            //     [naming.index as usize - imports_count] =
+                                            //     demangled_name;
+                                            // functions_section.function_original_names
+                                            //     [naming.index as usize - imports_count] =
+                                            //     naming.name;
+
+                                            function_index_lookup.insert(
+                                                naming.name,
+                                                naming.index as usize - imports_count,
                                             );
-
-                                            functions_section.function_names
-                                                [naming.index as usize - imports_count] =
-                                                demangled_name;
                                         }
                                     }
                                     // wasmparser::Name::Local(section_limited) => todo!(),
@@ -329,6 +352,11 @@ impl<'a> WasmData<'a> {
                         }
                         wasmparser::KnownCustom::Unknown => {
                             println!("Section {}", custom_section_reader.name());
+
+                            if custom_section_reader.name().starts_with(".debug") {
+                                debug_sections
+                                    .insert(custom_section_reader.name(), custom_section_reader);
+                            }
                         }
                         _ => {}
                     }
@@ -342,9 +370,6 @@ impl<'a> WasmData<'a> {
                 _ => {}
             }
         }
-
-        functions_section.function_groups = function_groups;
-        // function_groups.shrink_to_fit();
 
         // Extract symbol dependencies
         for idx in 0..functions_section.function_bodies.len() {
@@ -382,6 +407,272 @@ impl<'a> WasmData<'a> {
             dependants.shrink_to_fit();
             functions_section.function_called.push(dependants);
         }
+
+        let dwarf = gimli::Dwarf::load::<_, ()>(|section_id| {
+            println!("Return section {}", section_id.name());
+            let section = debug_sections
+                .get(section_id.name())
+                .map_or::<&[u8], _>(&[], |section| section.data());
+
+            Ok(EndianSlice::new(section, LittleEndian))
+        })
+        .unwrap();
+
+        // let mut namespace_stack = Array::new(&scratch, 128);
+
+        function_groups.push(FunctionGroup {
+            name: "<root>",
+            original_name: "",
+            fn_index: None,
+            parent: None,
+            // prev_sibling: None,
+            next_sibling: None,
+            first_child: None,
+            last_child: None,
+        });
+
+        let mut group_index_stack = Array::new(&scratch, 128);
+
+        let mut units = dwarf.units();
+        while let Ok(Some(unit_header)) = units.next() {
+            if unit_header.type_() != UnitType::Compilation {
+                println!("Unity type '{:?}' not supported!", unit_header.type_());
+                continue;
+            }
+
+            println!("Unit {:?}", unit_header);
+            let Ok(abbreviations) = dwarf.abbreviations(&unit_header) else {
+                continue;
+            };
+
+            // let unit_ref = dwarf.unit(unit).unwrap().unit_ref(&dwarf);
+
+            // let mut parent_group_index: usize = 0;
+            group_index_stack.clear();
+            group_index_stack.push((0, 0));
+
+            let mut prev_parent_group_index = 0;
+            let mut prev_parent_group_hash = 0;
+
+            let mut entries = unit_header.entries(&abbreviations);
+            'entry_loop: while let Ok(Some((mut offset, entry))) = entries.next_dfs() {
+                assert!(offset <= 1, "Unexpected offset: {}>1", offset);
+
+                println!("offset {offset}");
+                // If offset is negative, it means that we are climbing back the tree
+                while offset < 0 {
+                    group_index_stack.pop();
+                    // parent_group_index = function_groups[parent_group_index].parent.unwrap();
+                    offset += 1;
+                }
+
+                // If offset is 1, we are processing a nested entry, so we should update
+                // parent index with the previous function group index
+                if offset == 1 {
+                    group_index_stack.push((prev_parent_group_index, prev_parent_group_hash));
+                    // parent_group_index = function_groups.len() - 1;
+                }
+
+                let (parent_group_index, parent_group_hash) =
+                    group_index_stack.last().copied().unwrap();
+
+                if entry.tag() == DW_TAG_namespace {
+                    let name_attr = entry
+                        .attr(DW_AT_name)
+                        .expect("Failed to parse namespace name attribute")
+                        .expect("Failed to get name of namespace");
+
+                    let name_value = name_attr
+                        .string_value(&dwarf.debug_str)
+                        .expect("Failed to parse namespace 'name' attribute value");
+
+                    let name_str = unsafe { str::from_utf8_unchecked(name_value.slice()) };
+                    println!("namespace: {name_str}");
+
+                    let mut hasher = DefaultHasher::new();
+                    parent_group_hash.hash(&mut hasher);
+                    name_str.hash(&mut hasher);
+                    let new_group_hash = hasher.finish();
+
+                    prev_parent_group_index =
+                        match function_group_name_lookup.get(&new_group_hash).copied() {
+                            Some(group_idx) => group_idx,
+                            None => {
+                                // Add child
+                                let parent_group: FunctionGroup<'_> =
+                                    function_groups[parent_group_index];
+                                // let next_sibling = parent_group.first_child;
+                                // let prev_sibling = next_sibling.and_then(|next_sibling_index| {
+                                //     function_groups[next_sibling_index].prev_sibling
+                                // });
+
+                                if name_str.is_empty() {
+                                    println!("WTF");
+                                }
+
+                                function_groups.push(FunctionGroup {
+                                    name: name_str,
+                                    original_name: name_str,
+                                    fn_index: None,
+                                    parent: Some(parent_group_index),
+                                    next_sibling: None,
+                                    first_child: None,
+                                    last_child: None,
+                                });
+                                let new_function_group_index = function_groups.len() - 1;
+
+                                if parent_group.first_child.is_some() {
+                                    let first_child_index =
+                                        function_groups[parent_group_index].first_child.unwrap();
+                                    let last_child_index =
+                                        function_groups[parent_group_index].last_child.unwrap();
+
+                                    function_groups[parent_group_index].last_child =
+                                        Some(new_function_group_index);
+                                    function_groups[last_child_index].next_sibling =
+                                        Some(new_function_group_index);
+                                } else {
+                                    function_groups[parent_group_index].first_child =
+                                        Some(new_function_group_index);
+                                    function_groups[parent_group_index].last_child =
+                                        Some(new_function_group_index);
+                                }
+
+                                function_group_name_lookup
+                                    .insert(new_group_hash, new_function_group_index);
+
+                                new_function_group_index
+                            }
+                        };
+                    prev_parent_group_hash = new_group_hash;
+                }
+
+                println!(
+                    "Entry: {:x} - {}",
+                    entry.offset().to_debug_info_offset(&unit_header).unwrap().0,
+                    entry.tag()
+                );
+
+                if entry.tag() != DW_TAG_subprogram {
+                    continue;
+                }
+
+                let mut linkage_name = "";
+                let mut name = "";
+                let mut decl_file = "";
+                let mut decl_line = 0;
+
+                let mut attributes = entry.attrs();
+                while let Ok(Some(attr)) = attributes.next() {
+                    #[allow(non_upper_case_globals)]
+                    #[allow(non_snake_case)]
+                    match attr.name() {
+                        DW_AT_name => {
+                            let attr_value = attr
+                                .string_value(&dwarf.debug_str)
+                                .expect("Failed to parse subprogram 'name' attribute value");
+
+                            name = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
+                        }
+                        DW_AT_linkage_name => {
+                            let attr_value = attr.string_value(&dwarf.debug_str).expect(
+                                "Failed to parse subprogram 'linkage_name' attribute value",
+                            );
+
+                            linkage_name = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
+                        }
+                        DW_AT_inline => {
+                            let attr_value = attr
+                                .u8_value()
+                                .expect("Failed to parse subprogram 'inline' attribute value");
+
+                            if attr_value == DW_INL_inlined.0 {
+                                continue 'entry_loop;
+                            }
+                        }
+                        // DW_AT_decl_file => {
+                        //     println!("{} {:?}", name, attr);
+
+                        //     let attr_value = attr
+                        //         .string_value(&dwarf.debug_str)
+                        //         .expect("Failed to parse subprogram 'decl_file' attribute value");
+
+                        //     decl_file = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
+                        // }
+                        // DW_AT_decl_line => {
+                        //     println!("{} {:?}", name, attr);
+                        //     let attr_value = match attr.raw_value() {
+                        //         AttributeValue::Addr(addr) => addr,
+                        //         AttributeValue::Data4(value) => value as u64,
+                        //         _ => {
+                        //             0
+                        //             // panic!("Failed to parse subprogram 'decl_line' attribute value")
+                        //         }
+                        //     };
+
+                        //     decl_line = attr_value;
+                        // }
+                        _ => {}
+                    }
+                }
+
+                let parent_group = function_groups[parent_group_index];
+
+                if name.is_empty() {
+                    println!("WTF");
+                    continue;
+                }
+
+                function_groups.push(FunctionGroup {
+                    name: name,
+                    original_name: linkage_name,
+                    fn_index: None,
+                    parent: Some(parent_group_index),
+                    next_sibling: None,
+                    first_child: None,
+                    last_child: None,
+                });
+                let new_function_group_index = function_groups.len() - 1;
+
+                if parent_group.first_child.is_some() {
+                    let first_child_index =
+                        function_groups[parent_group_index].first_child.unwrap();
+                    let last_child_index = function_groups[parent_group_index].last_child.unwrap();
+
+                    function_groups[parent_group_index].last_child = Some(new_function_group_index);
+                    function_groups[last_child_index].next_sibling = Some(new_function_group_index);
+                } else {
+                    function_groups[parent_group_index].first_child =
+                        Some(new_function_group_index);
+                    function_groups[parent_group_index].last_child = Some(new_function_group_index);
+                }
+
+                // let Ok(Some(name_attr)) = entry.attr(DW_AT_name) else {
+                //     continue;
+                // };
+
+                // let name_value = name_attr
+                //     .string_value(&dwarf.debug_str)
+                //     .expect("Failed to parse subprogram 'name' attribute value");
+
+                // let name_str = unsafe { str::from_utf8_unchecked(name_value.slice()) };
+
+                if name.contains("foo") {
+                    println!("Break!");
+                }
+                println!("Value {} {}", linkage_name, name);
+
+                // if let AttributeValue::DebugStrRef(string_ref) = attr.raw_value() {
+                //     let v = dwarf.string(string_ref).unwrap().to_string_lossy();
+
+                // }
+
+                println!("Name {:?}", entry.attr(DW_AT_name));
+            }
+        }
+
+        functions_section.function_groups = function_groups;
+        // function_groups.shrink_to_fit();
 
         let mut wasm_data = Self {
             bytes,
@@ -471,6 +762,7 @@ pub struct FunctionNode {
 
 pub struct FunctionSection<'a> {
     pub function_types: Array<'a, usize>,
+    pub function_original_names: Array<'a, &'a str>,
     pub function_names: Array<'a, &'a str>,
     pub function_bodies: Array<'a, FunctionBody<'a>>,
     pub function_called: Array<'a, Array<'a, usize>>,
@@ -489,33 +781,17 @@ pub struct TableSection<'a> {
 //     Fn(usize),
 // }
 
+#[derive(Clone, Copy)]
 pub struct FunctionGroup<'a> {
     pub name: &'a str,
+    pub original_name: &'a str,
     pub fn_index: Option<usize>,
     pub parent: Option<usize>,
+    // pub prev_sibling: Option<usize>,
     pub next_sibling: Option<usize>,
     pub first_child: Option<usize>,
     pub last_child: Option<usize>,
 }
-
-// pub struct TreeArray<'a> {
-//     pub indices: Array<'a>,
-// }
-
-// impl<'a> TreeArray<'a> {
-//     pub fn new(arena: &'a Arena, capacity: usize) -> Self {
-
-//     }
-
-//     pub fn push_root(&mut self, index: usize) {
-//         self.indices.push(item);
-//     }
-
-//     #[inline]
-//     pub fn push(&mut self, parent_position: usize, ) {
-
-//     }
-// }
 
 fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {
     use std::fmt::Write;
@@ -561,7 +837,7 @@ fn split_modules2<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [&'a str
     let mut ticks = 0;
     let mut brackets = 0;
 
-    while end < demangled_name.len() {
+    while end < demangled_name.as_bytes().len() {
         match demangled_name.as_bytes()[end] {
             b':' if brackets == 0 && ticks == 0 => {
                 if !colon {
@@ -615,4 +891,230 @@ fn split_modules2<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [&'a str
 
     modules.shrink_to_fit();
     modules.to_slice()
+}
+
+#[derive(Debug)]
+enum ModuleSegment<'a> {
+    Group(&'a str),
+    TypeAsTrait(&'a str, &'a str),
+}
+
+fn split_modules_3<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [ModuleSegment<'a>] {
+    let mut modules = Array::new(arena, 128);
+
+    let mut colon = false;
+    let mut start = 0;
+    let mut end = 0;
+    let mut ticks = 0;
+    let mut brackets = 0;
+
+    while end < demangled_name.as_bytes().len() {
+        match demangled_name.as_bytes()[end] {
+            b':' if brackets == 0 && ticks == 0 => {
+                if !colon {
+                    if end != start {
+                        let segment = unsafe {
+                            str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end])
+                        };
+
+                        if demangled_name.as_bytes()[start] == b'<' {
+                            let (type_name, trait_name) = parse_type_as_trait(segment);
+
+                            modules.push(ModuleSegment::TypeAsTrait(type_name, trait_name));
+                        } else {
+                            modules.push(ModuleSegment::Group(segment));
+                        }
+                    }
+
+                    colon = true;
+                }
+
+                end += 1;
+                start = end;
+            }
+            b'<' => {
+                ticks += 1;
+                end += 1;
+            }
+            b'>' => {
+                ticks -= 1;
+                end += 1;
+            }
+            b'[' => {
+                brackets += 1;
+                end += 1;
+            }
+            b']' => {
+                brackets -= 1;
+                end += 1;
+            }
+            _ => {
+                colon = false;
+                end += 1;
+            }
+        }
+    }
+
+    if start < end {
+        let segment = unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) };
+
+        if demangled_name.as_bytes()[start] == b'<' {
+            let (type_name, trait_name) = parse_type_as_trait(segment);
+
+            modules.push(ModuleSegment::TypeAsTrait(type_name, trait_name));
+        } else {
+            modules.push(ModuleSegment::Group(segment));
+        }
+    }
+
+    for module in modules.iter() {
+        println!("Module {:?}", module);
+    }
+
+    // let mut position = 0;
+    // for segment in demangled_name.split("::") {
+    //     println!("Segment {}", segment);
+    // }
+
+    modules.shrink_to_fit();
+    modules.to_slice()
+}
+
+fn parse_type_as_trait<'a>(demangled_name: &'a str) -> (&'a str, &'a str) {
+    if demangled_name.is_empty() {
+        panic!("Failed to parse type as trait: name is empty");
+    }
+
+    let bytes_len = demangled_name.as_bytes().len();
+    if demangled_name.as_bytes()[0] != b'<' {
+        panic!("Failed to parse type as trait: didn't start with '<' character");
+    }
+    if demangled_name.as_bytes()[bytes_len - 1] != b'>' {
+        panic!("Failed to parse type as trait: didn't end with '>' character");
+    }
+
+    let demangled_name =
+        unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[1..(bytes_len - 1)]) };
+
+    let mut tokens = demangled_name.split_ascii_whitespace();
+
+    let type_name = tokens
+        .next()
+        .expect("Failed to parse type as trait: missing type name");
+
+    // Token 'as'
+    let _ = tokens
+        .next()
+        .expect("Failed to parse type as trait: missing 'as' token");
+
+    let trait_name = tokens
+        .next()
+        .expect("Failed to parse type as trait: missing trait name");
+
+    (type_name, trait_name)
+}
+
+fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<&'a str> {
+    let mut colon = false;
+    let mut start = 0;
+    let mut end = 0;
+    let mut ticks = 0;
+    let mut brackets = 0;
+
+    let mut is_type_as_trait = false;
+
+    while end < demangled_name.as_bytes().len() {
+        let c = demangled_name.as_bytes()[end];
+        match c {
+            b':' if colon && brackets == 0 && ticks == 0 => {
+                end += 1;
+                start = end;
+            }
+            b'<' => {
+                if start == end {
+                    is_type_as_trait = true;
+                }
+
+                ticks += 1;
+                end += 1;
+            }
+            b'>' => {
+                ticks -= 1;
+                end += 1;
+
+                if is_type_as_trait && ticks == 0 {
+                    // This is the slice of the type `<foo::Type as bar::Trait>`
+                    let type_as_trait_str =
+                        unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) };
+
+                    let (_, trait_name) = parse_type_as_trait(type_as_trait_str);
+                    return Some(trait_name);
+                }
+            }
+            b'[' => {
+                brackets += 1;
+                end += 1;
+            }
+            b']' => {
+                brackets -= 1;
+                end += 1;
+            }
+            _ => {
+                end += 1;
+            }
+        }
+
+        colon = c == b':';
+    }
+
+    None
+
+    // if start < end {
+    //     let segment = unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) };
+
+    //     if demangled_name.as_bytes()[start] == b'<' {
+    //         let (type_name, trait_name) = parse_type_as_trait(segment);
+
+    //         modules.push(ModuleSegment::TypeAsTrait(type_name, trait_name));
+    //     } else {
+    //         modules.push(ModuleSegment::Group(segment));
+    //     }
+    // }
+
+    // for module in modules.iter() {
+    //     println!("Module {:?}", module);
+    // }
+
+    // let mut position = 0;
+    // for segment in demangled_name.split("::") {
+    //     println!("Segment {}", segment);
+    // }
+
+    // modules.shrink_to_fit();
+    // modules.to_slice()
+}
+
+#[cfg(test)]
+mod test {
+    use super::extract_trait_from_demangled_name;
+
+    #[test]
+    fn extract_trait_from_demangled_name_works() {
+        assert_eq!(
+            extract_trait_from_demangled_name("<foo::bar::BarImpl as other::TraitName>"),
+            Some("other::TraitName")
+        );
+        assert_eq!(
+            extract_trait_from_demangled_name(
+                "foo::<bar::BarImpl as other::TraitName>::foo_function"
+            ),
+            Some("other::TraitName")
+        );
+
+        assert_eq!(
+            extract_trait_from_demangled_name("foo::bar::BarImpl<usize>"),
+            None
+        );
+        assert_eq!(extract_trait_from_demangled_name("foo::bar::BarImpl"), None);
+    }
 }
