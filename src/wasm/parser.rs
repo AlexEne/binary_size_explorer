@@ -4,8 +4,10 @@ use std::{
 };
 
 use gimli::{
-    AttributeValue, DW_AT_decl_file, DW_AT_decl_line, DW_AT_inline, DW_AT_linkage_name, DW_AT_name,
-    DW_INL_inlined, DW_TAG_namespace, DW_TAG_subprogram, EndianSlice, LittleEndian, UnitType,
+    AttributeValue, DW_AT_decl_file, DW_AT_decl_line, DW_AT_declaration, DW_AT_inline,
+    DW_AT_linkage_name, DW_AT_name, DW_AT_specification, DW_INL_inlined, DW_TAG_namespace,
+    DW_TAG_structure_type, DW_TAG_subprogram, DebugInfoOffset, EndianSlice, LittleEndian,
+    UnitOffset, UnitType,
 };
 use hashbrown::{DefaultHashBuilder, HashMap};
 use petgraph::{algo::dominators::Dominators, visit};
@@ -26,6 +28,31 @@ pub struct WasmData<'a> {
     pub functions_section: FunctionSection<'a>,
 
     pub functions_dominators: Option<Dominators<usize>>,
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct SymbolName<'a> {
+    hash: u64,
+    name: &'a str,
+}
+
+impl<'a> SymbolName<'a> {
+    // pub fn new(hash: u64, name: &'a str) -> Self {
+    //     Self { hash, name }
+    // }
+
+    pub fn new_with_parent(parent: SymbolName<'a>, name: &'a str) -> Self {
+        let mut hasher = DefaultHasher::new();
+        parent.hash.hash(&mut hasher);
+        name.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        Self { hash, name }
+    }
+
+    pub fn as_str(&self) -> &'a str {
+        self.name
+    }
 }
 
 impl<'a> WasmData<'a> {
@@ -51,9 +78,12 @@ impl<'a> WasmData<'a> {
 
         let scratch = scratch_arena(&[arena]);
         let mut function_group_name_lookup =
-            HashMap::<u64, usize, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
+            HashMap::<SymbolName<'a>, usize, DefaultHashBuilder, &Arena>::with_capacity_in(
+                0, &scratch,
+            );
         let mut function_index_lookup =
             HashMap::<&str, usize, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
+        let mut offset_index_lookup = HashMap::<DebugInfoOffset<usize>, usize>::new();
         let mut function_groups = Array::new(arena, 0);
 
         let mut debug_sections = HashMap::new();
@@ -159,7 +189,7 @@ impl<'a> WasmData<'a> {
                     }
 
                     // TODO: (bruno) something better than 5 * count!
-                    function_groups = Array::new(arena, 1500 * count as usize);
+                    function_groups = Array::new(arena, 10000 * count as usize);
                     function_group_name_lookup =
                         HashMap::with_capacity_in(5 * count as usize, &scratch);
 
@@ -419,10 +449,16 @@ impl<'a> WasmData<'a> {
         .unwrap();
 
         // let mut namespace_stack = Array::new(&scratch, 128);
-
-        function_groups.push(FunctionGroup {
+        let root_symbol_name = SymbolName {
+            hash: 0,
             name: "<root>",
+        };
+        function_groups.push(FunctionGroup {
+            ty: FunctionGroupType::Namespace,
+            name: root_symbol_name,
             original_name: "",
+            demangled_name: "",
+            implements: None,
             fn_index: None,
             parent: None,
             // prev_sibling: None,
@@ -432,6 +468,10 @@ impl<'a> WasmData<'a> {
         });
 
         let mut group_index_stack = Array::new(&scratch, 128);
+
+        // let mut hasher = DefaultHasher::new();
+        // SymbolName::new(0, "<root>").hash(&mut hasher);
+        // let root_hash = hasher.finish();
 
         let mut units = dwarf.units();
         while let Ok(Some(unit_header)) = units.next() {
@@ -449,10 +489,10 @@ impl<'a> WasmData<'a> {
 
             // let mut parent_group_index: usize = 0;
             group_index_stack.clear();
-            group_index_stack.push((0, 0));
+            group_index_stack.push((0, root_symbol_name));
 
             let mut prev_parent_group_index = 0;
-            let mut prev_parent_group_hash = 0;
+            let mut prev_parent_group_name = root_symbol_name;
 
             let mut entries = unit_header.entries(&abbreviations);
             'entry_loop: while let Ok(Some((mut offset, entry))) = entries.next_dfs() {
@@ -469,50 +509,64 @@ impl<'a> WasmData<'a> {
                 // If offset is 1, we are processing a nested entry, so we should update
                 // parent index with the previous function group index
                 if offset == 1 {
-                    group_index_stack.push((prev_parent_group_index, prev_parent_group_hash));
+                    group_index_stack.push((prev_parent_group_index, prev_parent_group_name));
                     // parent_group_index = function_groups.len() - 1;
                 }
 
-                let (parent_group_index, parent_group_hash) =
+                let (parent_group_index, parent_group_name) =
                     group_index_stack.last().copied().unwrap();
 
-                if entry.tag() == DW_TAG_namespace {
-                    let name_attr = entry
+                if entry.tag() == DW_TAG_namespace || entry.tag() == DW_TAG_structure_type {
+                    let name_str = entry
                         .attr(DW_AT_name)
                         .expect("Failed to parse namespace name attribute")
-                        .expect("Failed to get name of namespace");
+                        .map(|attr| attr.string_value(&dwarf.debug_str))
+                        .flatten()
+                        .map(|value| unsafe { str::from_utf8_unchecked(value.slice()) })
+                        // .unwrap();
+                        .unwrap_or("");
+                    // .expect("Failed to get name of namespace");
 
-                    let name_value = name_attr
-                        .string_value(&dwarf.debug_str)
-                        .expect("Failed to parse namespace 'name' attribute value");
+                    // let name_value = name_attr
+                    //     .string_value(&dwarf.debug_str)
+                    //     .expect("Failed to parse namespace 'name' attribute value");
 
-                    let name_str = unsafe { str::from_utf8_unchecked(name_value.slice()) };
+                    // let name_str = unsafe { str::from_utf8_unchecked(name_value.slice()) };
                     println!("namespace: {name_str}");
 
-                    let mut hasher = DefaultHasher::new();
-                    parent_group_hash.hash(&mut hasher);
-                    name_str.hash(&mut hasher);
-                    let new_group_hash = hasher.finish();
+                    let new_group_name = SymbolName::new_with_parent(parent_group_name, name_str);
+
+                    // let mut hasher = DefaultHasher::new();
+                    // parent_group_hash.hash(&mut hasher);
+                    // name_str.hash(&mut hasher);
+                    // let new_group_hash = hasher.finish();
 
                     prev_parent_group_index =
-                        match function_group_name_lookup.get(&new_group_hash).copied() {
+                        match function_group_name_lookup.get(&new_group_name).copied() {
                             Some(group_idx) => group_idx,
                             None => {
                                 // Add child
                                 let parent_group: FunctionGroup<'_> =
                                     function_groups[parent_group_index];
-                                // let next_sibling = parent_group.first_child;
-                                // let prev_sibling = next_sibling.and_then(|next_sibling_index| {
-                                //     function_groups[next_sibling_index].prev_sibling
-                                // });
 
-                                if name_str.is_empty() {
-                                    println!("WTF");
-                                }
+                                // if name_str.is_empty() {
+                                //     println!("WTF");
+                                // }
+
+                                let ty = match entry.tag() {
+                                    DW_TAG_structure_type => FunctionGroupType::Struct,
+                                    DW_TAG_namespace if name_str.starts_with("{impl#") => {
+                                        FunctionGroupType::Impl
+                                    }
+                                    _ => FunctionGroupType::Namespace,
+                                };
 
                                 function_groups.push(FunctionGroup {
-                                    name: name_str,
+                                    ty,
+                                    name: new_group_name,
                                     original_name: name_str,
+                                    demangled_name: name_str,
+                                    implements: None,
                                     fn_index: None,
                                     parent: Some(parent_group_index),
                                     next_sibling: None,
@@ -538,13 +592,18 @@ impl<'a> WasmData<'a> {
                                         Some(new_function_group_index);
                                 }
 
+                                let offset =
+                                    entry.offset().to_debug_info_offset(&unit_header).unwrap();
+
+                                offset_index_lookup.insert(offset, new_function_group_index);
                                 function_group_name_lookup
-                                    .insert(new_group_hash, new_function_group_index);
+                                    .insert(new_group_name, new_function_group_index);
 
                                 new_function_group_index
                             }
                         };
-                    prev_parent_group_hash = new_group_hash;
+
+                    prev_parent_group_name = new_group_name;
                 }
 
                 println!(
@@ -559,6 +618,9 @@ impl<'a> WasmData<'a> {
 
                 let mut linkage_name = "";
                 let mut name = "";
+                let mut declaration = false;
+                let mut specification = None;
+                let mut inlined = false;
                 let mut decl_file = "";
                 let mut decl_line = 0;
 
@@ -579,15 +641,47 @@ impl<'a> WasmData<'a> {
                                 "Failed to parse subprogram 'linkage_name' attribute value",
                             );
 
+                            // linkage_name = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
                             linkage_name = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
                         }
+                        DW_AT_declaration => {
+                            println!("Declaration: {:?}", attr);
+
+                            // match attr.raw_value() {
+                            //     AttributeValue::Flag(value) => {
+                            //         if value {
+                            //             continue 'entry_loop;
+                            //         }
+                            //     }
+                            //     _ => {
+                            //         panic!(
+                            //             "Failed to parse subprogram 'declaration' attribute value: unexpected attribue value format"
+                            //         )
+                            //     }
+                            // }
+                        }
+                        DW_AT_specification => {
+                            println!("Specification: {:?}", attr);
+                            if let AttributeValue::UnitRef(unit_offset) = attr.raw_value() {
+                                println!(
+                                    "UnitOffset: {:x}",
+                                    unit_offset.to_debug_info_offset(&unit_header).unwrap().0
+                                );
+                                specification = Some(unit_offset);
+                            }
+
+                            // let attr_value = attr.offset_value().expect(
+                            //     "Failed to parse subprogram 'specification' attribute value",
+                            // );
+                        }
                         DW_AT_inline => {
+                            // println!("Inline: {:?}", attr);
                             let attr_value = attr
                                 .u8_value()
                                 .expect("Failed to parse subprogram 'inline' attribute value");
 
                             if attr_value == DW_INL_inlined.0 {
-                                continue 'entry_loop;
+                                inlined = true;
                             }
                         }
                         // DW_AT_decl_file => {
@@ -616,58 +710,156 @@ impl<'a> WasmData<'a> {
                     }
                 }
 
-                let parent_group = function_groups[parent_group_index];
+                let subprogram_symbol_name = SymbolName::new_with_parent(parent_group_name, name);
 
                 if name.is_empty() {
-                    println!("WTF");
-                    continue;
-                }
+                    if let Some(specification) = specification {
+                        let offset = specification.to_debug_info_offset(&unit_header).unwrap();
 
-                function_groups.push(FunctionGroup {
-                    name: name,
-                    original_name: linkage_name,
-                    fn_index: None,
-                    parent: Some(parent_group_index),
-                    next_sibling: None,
-                    first_child: None,
-                    last_child: None,
-                });
-                let new_function_group_index = function_groups.len() - 1;
+                        // assert!(
+                        //     inlined,
+                        //     "Unexpected specification entry that is not inlined"
+                        // );
 
-                if parent_group.first_child.is_some() {
-                    let first_child_index =
-                        function_groups[parent_group_index].first_child.unwrap();
-                    let last_child_index = function_groups[parent_group_index].last_child.unwrap();
+                        println!(
+                            "SUBPROGRAM inlined pointing to specification: {:x}",
+                            offset.0
+                        );
 
-                    function_groups[parent_group_index].last_child = Some(new_function_group_index);
-                    function_groups[last_child_index].next_sibling = Some(new_function_group_index);
+                        let Some(index) = offset_index_lookup.get(&offset).copied() else {
+                            continue;
+                        };
+                        // let index: usize = offset_index_lookup.get(&offset).copied().unwrap();
+                        println!("Function group ty {:?}", function_groups[index].ty);
+                        assert!(
+                            function_groups[index].ty == FunctionGroupType::FunctionInstance
+                                || function_groups[index].ty
+                                    == FunctionGroupType::FunctionInlinedInstance
+                        );
+                        function_groups[index].ty = FunctionGroupType::FunctionInlinedInstance;
+                    }
                 } else {
-                    function_groups[parent_group_index].first_child =
-                        Some(new_function_group_index);
-                    function_groups[parent_group_index].last_child = Some(new_function_group_index);
+                    if name.starts_with("print_foo") {
+                        println!("Break");
+                    }
+
+                    let parent_group = function_groups[parent_group_index];
+
+                    let subprogram_group_index = if let Some(subprogram_index) =
+                        function_group_name_lookup.get(&subprogram_symbol_name)
+                    {
+                        *subprogram_index
+                    } else {
+                        function_groups.push(FunctionGroup {
+                            ty: FunctionGroupType::Function,
+                            name: subprogram_symbol_name,
+                            original_name: "",
+                            demangled_name: "",
+                            implements: None,
+                            fn_index: None,
+                            parent: Some(parent_group_index),
+                            next_sibling: None,
+                            first_child: None,
+                            last_child: None,
+                        });
+                        let new_function_group_index = function_groups.len() - 1;
+
+                        if parent_group.first_child.is_some() {
+                            let last_child_index =
+                                function_groups[parent_group_index].last_child.unwrap();
+
+                            function_groups[parent_group_index].last_child =
+                                Some(new_function_group_index);
+                            function_groups[last_child_index].next_sibling =
+                                Some(new_function_group_index);
+                        } else {
+                            function_groups[parent_group_index].first_child =
+                                Some(new_function_group_index);
+                            function_groups[parent_group_index].last_child =
+                                Some(new_function_group_index);
+                        }
+
+                        // let offset = entry.offset().to_debug_info_offset(&unit_header).unwrap();
+                        // offset_index_lookup.insert(offset, new_function_group_index);
+                        function_group_name_lookup
+                            .insert(subprogram_symbol_name, new_function_group_index);
+
+                        new_function_group_index
+                    };
+
+                    let demangled_name = demangled_name(arena, linkage_name);
+
+                    if matches!(
+                        parent_group.ty,
+                        FunctionGroupType::Struct | FunctionGroupType::Impl
+                    ) {
+                        if let Some((type_name, trait_name)) =
+                            extract_trait_from_demangled_name(demangled_name)
+                        {
+                            if trait_name == "as" && type_name == "*const" {
+                                println!("Original name: {}", linkage_name);
+                            }
+
+                            function_groups[parent_group_index].original_name = type_name;
+                            function_groups[parent_group_index].implements = Some(trait_name);
+                        }
+                    }
+
+                    let instance_name = SymbolName::new_with_parent(subprogram_symbol_name, name);
+
+                    let new_function_group_index = if let Some(new_function_group_index) =
+                        function_group_name_lookup.get(&instance_name)
+                    {
+                        *new_function_group_index
+                    } else {
+                        function_groups.push(FunctionGroup {
+                            ty: if !inlined {
+                                FunctionGroupType::FunctionInstance
+                            } else {
+                                FunctionGroupType::FunctionInlinedInstance
+                            },
+                            name: subprogram_symbol_name,
+                            original_name: linkage_name,
+                            demangled_name: demangled_name,
+                            implements: None,
+                            fn_index: None,
+                            parent: Some(subprogram_group_index),
+                            next_sibling: None,
+                            first_child: None,
+                            last_child: None,
+                        });
+                        let new_function_group_index = function_groups.len() - 1;
+
+                        if name
+                            == "_RNvMs0_NtCsdc2esZvPOXV_5alloc7raw_vecINtB5_6RawVechE16with_capacity_inCskFvGLp3XVtI_15wasm_playground"
+                        {
+                            println!("Break");
+                        }
+
+                        let subprogram_group = function_groups[subprogram_group_index];
+
+                        if subprogram_group.first_child.is_some() {
+                            let last_child_index =
+                                function_groups[subprogram_group_index].last_child.unwrap();
+
+                            function_groups[subprogram_group_index].last_child =
+                                Some(new_function_group_index);
+                            function_groups[last_child_index].next_sibling =
+                                Some(new_function_group_index);
+                        } else {
+                            function_groups[subprogram_group_index].first_child =
+                                Some(new_function_group_index);
+                            function_groups[subprogram_group_index].last_child =
+                                Some(new_function_group_index);
+                        }
+
+                        new_function_group_index
+                    };
+
+                    let offset = entry.offset().to_debug_info_offset(&unit_header).unwrap();
+                    println!("Adding {} -> {}", offset.0, new_function_group_index);
+                    offset_index_lookup.insert(offset, new_function_group_index);
                 }
-
-                // let Ok(Some(name_attr)) = entry.attr(DW_AT_name) else {
-                //     continue;
-                // };
-
-                // let name_value = name_attr
-                //     .string_value(&dwarf.debug_str)
-                //     .expect("Failed to parse subprogram 'name' attribute value");
-
-                // let name_str = unsafe { str::from_utf8_unchecked(name_value.slice()) };
-
-                if name.contains("foo") {
-                    println!("Break!");
-                }
-                println!("Value {} {}", linkage_name, name);
-
-                // if let AttributeValue::DebugStrRef(string_ref) = attr.raw_value() {
-                //     let v = dwarf.string(string_ref).unwrap().to_string_lossy();
-
-                // }
-
-                println!("Name {:?}", entry.attr(DW_AT_name));
             }
         }
 
@@ -781,10 +973,23 @@ pub struct TableSection<'a> {
 //     Fn(usize),
 // }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionGroupType {
+    Namespace,
+    Struct,
+    Impl,
+    Function,
+    FunctionInstance,
+    FunctionInlinedInstance,
+}
+
 #[derive(Clone, Copy)]
 pub struct FunctionGroup<'a> {
-    pub name: &'a str,
+    pub ty: FunctionGroupType,
+    pub name: SymbolName<'a>,
     pub original_name: &'a str,
+    pub demangled_name: &'a str,
+    pub implements: Option<&'a str>,
     pub fn_index: Option<usize>,
     pub parent: Option<usize>,
     // pub prev_sibling: Option<usize>,
@@ -893,134 +1098,61 @@ fn split_modules2<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [&'a str
     modules.to_slice()
 }
 
-#[derive(Debug)]
-enum ModuleSegment<'a> {
-    Group(&'a str),
-    TypeAsTrait(&'a str, &'a str),
-}
-
-fn split_modules_3<'a>(arena: &'a Arena, demangled_name: &'a str) -> &'a [ModuleSegment<'a>] {
-    let mut modules = Array::new(arena, 128);
-
-    let mut colon = false;
-    let mut start = 0;
-    let mut end = 0;
-    let mut ticks = 0;
-    let mut brackets = 0;
-
-    while end < demangled_name.as_bytes().len() {
-        match demangled_name.as_bytes()[end] {
-            b':' if brackets == 0 && ticks == 0 => {
-                if !colon {
-                    if end != start {
-                        let segment = unsafe {
-                            str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end])
-                        };
-
-                        if demangled_name.as_bytes()[start] == b'<' {
-                            let (type_name, trait_name) = parse_type_as_trait(segment);
-
-                            modules.push(ModuleSegment::TypeAsTrait(type_name, trait_name));
-                        } else {
-                            modules.push(ModuleSegment::Group(segment));
-                        }
-                    }
-
-                    colon = true;
-                }
-
-                end += 1;
-                start = end;
-            }
-            b'<' => {
-                ticks += 1;
-                end += 1;
-            }
-            b'>' => {
-                ticks -= 1;
-                end += 1;
-            }
-            b'[' => {
-                brackets += 1;
-                end += 1;
-            }
-            b']' => {
-                brackets -= 1;
-                end += 1;
-            }
-            _ => {
-                colon = false;
-                end += 1;
-            }
-        }
-    }
-
-    if start < end {
-        let segment = unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) };
-
-        if demangled_name.as_bytes()[start] == b'<' {
-            let (type_name, trait_name) = parse_type_as_trait(segment);
-
-            modules.push(ModuleSegment::TypeAsTrait(type_name, trait_name));
-        } else {
-            modules.push(ModuleSegment::Group(segment));
-        }
-    }
-
-    for module in modules.iter() {
-        println!("Module {:?}", module);
-    }
-
-    // let mut position = 0;
-    // for segment in demangled_name.split("::") {
-    //     println!("Segment {}", segment);
-    // }
-
-    modules.shrink_to_fit();
-    modules.to_slice()
-}
-
-fn parse_type_as_trait<'a>(demangled_name: &'a str) -> (&'a str, &'a str) {
+fn parse_type_as_trait<'a>(demangled_name: &'a str) -> Option<(&'a str, &'a str)> {
     if demangled_name.is_empty() {
-        panic!("Failed to parse type as trait: name is empty");
+        return None;
+        // panic!("Failed to parse type as trait: name is empty");
     }
 
     let bytes_len = demangled_name.as_bytes().len();
-    if demangled_name.as_bytes()[0] != b'<' {
-        panic!("Failed to parse type as trait: didn't start with '<' character");
-    }
-    if demangled_name.as_bytes()[bytes_len - 1] != b'>' {
-        panic!("Failed to parse type as trait: didn't end with '>' character");
-    }
-
     let demangled_name =
         unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[1..(bytes_len - 1)]) };
 
-    let mut tokens = demangled_name.split_ascii_whitespace();
+    if let Some(position) = demangled_name.find(" as ") {
+        Some((
+            &demangled_name[0..position],
+            &demangled_name[(position + " as ".len())..],
+        ))
+    } else {
+        None
+    }
 
-    let type_name = tokens
-        .next()
-        .expect("Failed to parse type as trait: missing type name");
+    // let bytes_len = demangled_name.as_bytes().len();
+    // if demangled_name.as_bytes()[0] != b'<' {
+    //     return None;
+    //     // panic!("Failed to parse type as trait: didn't start with '<' character");
+    // }
+    // if demangled_name.as_bytes()[bytes_len - 1] != b'>' {
+    //     return None;
+    //     // panic!("Failed to parse type as trait: didn't end with '>' character");
+    // }
 
-    // Token 'as'
-    let _ = tokens
-        .next()
-        .expect("Failed to parse type as trait: missing 'as' token");
+    // let demangled_name =
+    //     unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[1..(bytes_len - 1)]) };
 
-    let trait_name = tokens
-        .next()
-        .expect("Failed to parse type as trait: missing trait name");
+    // let mut tokens = demangled_name.split_ascii_whitespace();
 
-    (type_name, trait_name)
+    // let type_name = tokens.next()?;
+    // // .expect("Failed to parse type as trait: missing type name");
+
+    // // Token 'as'
+    // let _ = tokens.next()?;
+    // // .expect("Failed to parse type as trait: missing 'as' token");
+
+    // let trait_name = tokens.next()?;
+    // // .expect("Failed to parse type as trait: missing trait name");
+
+    // Some((type_name, trait_name))
 }
 
-fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<&'a str> {
+fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<(&'a str, &'a str)> {
     let mut colon = false;
     let mut start = 0;
     let mut end = 0;
     let mut ticks = 0;
     let mut brackets = 0;
 
+    let mut contains_space = false;
     let mut is_type_as_trait = false;
 
     while end < demangled_name.as_bytes().len() {
@@ -1029,6 +1161,7 @@ fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<&'a 
             b':' if colon && brackets == 0 && ticks == 0 => {
                 end += 1;
                 start = end;
+                contains_space = false;
             }
             b'<' => {
                 if start == end {
@@ -1042,13 +1175,16 @@ fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<&'a 
                 ticks -= 1;
                 end += 1;
 
-                if is_type_as_trait && ticks == 0 {
+                if is_type_as_trait && contains_space && ticks == 0 {
                     // This is the slice of the type `<foo::Type as bar::Trait>`
                     let type_as_trait_str =
                         unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) };
 
-                    let (_, trait_name) = parse_type_as_trait(type_as_trait_str);
-                    return Some(trait_name);
+                    if let Some((type_name, trait_name)) = parse_type_as_trait(type_as_trait_str) {
+                        return Some((type_name, trait_name));
+                    } else {
+                        return None;
+                    }
                 }
             }
             b'[' => {
@@ -1057,6 +1193,10 @@ fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<&'a 
             }
             b']' => {
                 brackets -= 1;
+                end += 1;
+            }
+            b' ' => {
+                contains_space = true;
                 end += 1;
             }
             _ => {
@@ -1102,13 +1242,13 @@ mod test {
     fn extract_trait_from_demangled_name_works() {
         assert_eq!(
             extract_trait_from_demangled_name("<foo::bar::BarImpl as other::TraitName>"),
-            Some("other::TraitName")
+            Some(("foo::bar::BarImpl", "other::TraitName"))
         );
         assert_eq!(
             extract_trait_from_demangled_name(
                 "foo::<bar::BarImpl as other::TraitName>::foo_function"
             ),
-            Some("other::TraitName")
+            Some(("bar::BarImpl", "other::TraitName"))
         );
 
         assert_eq!(
@@ -1116,5 +1256,10 @@ mod test {
             None
         );
         assert_eq!(extract_trait_from_demangled_name("foo::bar::BarImpl"), None);
+
+        assert_eq!(
+            extract_trait_from_demangled_name("<*const usize as other::TraitName>::foo_function"),
+            Some(("*const usize", "other::TraitName"))
+        );
     }
 }

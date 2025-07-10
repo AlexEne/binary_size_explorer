@@ -8,7 +8,7 @@ use crate::{
     data_provider::{Filter, FunctionsView, ViewMode},
     data_provider_twiggy::DataProviderTwiggy,
     gui::tree_view::TreeView,
-    wasm::parser::WasmData,
+    wasm::parser::{FunctionGroupType, WasmData},
 };
 use core::str;
 
@@ -216,13 +216,47 @@ impl FunctionsExplorer {
         }
 
         fn show_item<'a>(ui: &mut egui::Ui, data: &WasmData<'a>, group_idx: usize) {
+            let label = match data.functions_section.function_groups[group_idx].ty {
+                FunctionGroupType::Impl => {
+                    format!(
+                        "impl {} for {} - {}",
+                        data.functions_section.function_groups[group_idx]
+                            .implements
+                            .unwrap_or(""),
+                        data.functions_section.function_groups[group_idx].original_name,
+                        group_idx
+                    )
+                }
+                FunctionGroupType::FunctionInlinedInstance => {
+                    format!(
+                        "{} - {} - {} [inlined]",
+                        data.functions_section.function_groups[group_idx]
+                            .name
+                            .as_str(),
+                        data.functions_section.function_groups[group_idx].demangled_name,
+                        group_idx
+                    )
+                }
+                _ => {
+                    format!(
+                        "{} - {} - {}",
+                        data.functions_section.function_groups[group_idx]
+                            .name
+                            .as_str(),
+                        data.functions_section.function_groups[group_idx].demangled_name,
+                        group_idx
+                    )
+                }
+            };
+
             ui.collapsing(
-                format!(
-                    "{} - {} - {}",
-                    data.functions_section.function_groups[group_idx].name,
-                    data.functions_section.function_groups[group_idx].original_name,
-                    group_idx
-                ),
+                label,
+                // format!(
+                //     "{} - {} - {}",
+                //     data.functions_section.function_groups[group_idx].name,
+                //     data.functions_section.function_groups[group_idx].original_name,
+                //     group_idx
+                // ),
                 |ui| {
                     let mut cur_child =
                         data.functions_section.function_groups[group_idx].first_child;
