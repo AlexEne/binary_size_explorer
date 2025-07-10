@@ -216,34 +216,82 @@ impl FunctionsExplorer {
         }
 
         fn show_item<'a>(ui: &mut egui::Ui, data: &WasmData<'a>, group_idx: usize) {
-            let label = match data.functions_section.function_groups[group_idx].ty {
+            // if dbg!(
+            //     data.functions_section
+            //         .function_groups
+            //         .get(group_idx)
+            //         .name
+            //         .as_str()
+            // ) == "test2"
+            // {
+            //     println!("Breaj");
+            // }
+
+            // if dbg!(data.functions_section.function_groups.get(group_idx).ty)
+            //     != FunctionGroupType::Function
+            //     && !dbg!(
+            //         data.functions_section
+            //             .function_groups
+            //             .has_children(group_idx)
+            //     )
+            // {
+            //     return;
+            // }
+
+            let label = match data.functions_section.function_groups.get(group_idx).ty {
+                FunctionGroupType::Struct => {
+                    format!(
+                        "struct {} - {}",
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
+                            .name
+                            .as_str(),
+                        group_idx
+                    )
+                }
                 FunctionGroupType::Impl => {
                     format!(
                         "impl {} for {} - {}",
-                        data.functions_section.function_groups[group_idx]
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
                             .implements
                             .unwrap_or(""),
-                        data.functions_section.function_groups[group_idx].original_name,
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
+                            .original_name,
                         group_idx
                     )
                 }
                 FunctionGroupType::FunctionInlinedInstance => {
                     format!(
                         "{} - {} - {} [inlined]",
-                        data.functions_section.function_groups[group_idx]
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
                             .name
                             .as_str(),
-                        data.functions_section.function_groups[group_idx].demangled_name,
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
+                            .demangled_name,
                         group_idx
                     )
                 }
                 _ => {
                     format!(
                         "{} - {} - {}",
-                        data.functions_section.function_groups[group_idx]
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
                             .name
                             .as_str(),
-                        data.functions_section.function_groups[group_idx].demangled_name,
+                        data.functions_section
+                            .function_groups
+                            .get(group_idx)
+                            .demangled_name,
                         group_idx
                     )
                 }
@@ -253,32 +301,55 @@ impl FunctionsExplorer {
                 label,
                 // format!(
                 //     "{} - {} - {}",
-                //     data.functions_section.function_groups[group_idx].name,
-                //     data.functions_section.function_groups[group_idx].original_name,
+                //     data.functions_section.function_groups.get(group_idx).name,
+                //     data.functions_section.function_groups.get(group_idx).original_name,
                 //     group_idx
                 // ),
                 |ui| {
-                    let mut cur_child =
-                        data.functions_section.function_groups[group_idx].first_child;
+                    // let mut cur_child = data
+                    //     .functions_section
+                    //     .function_groups
+                    //     .get(group_idx)
+                    //     .first_child;
 
-                    while let Some(child_group_idx) = cur_child {
+                    // while let Some(child_group_idx) = cur_child {
+                    //     show_item(ui, data, child_group_idx);
+                    //     // ui.label(data.functions_section.function_groups[child_group_idx].name);
+
+                    //     cur_child =
+                    //         data.functions_section.function_groups[child_group_idx].next_sibling;
+                    // }
+
+                    for child_group_idx in data
+                        .functions_section
+                        .function_groups
+                        .get_children(group_idx)
+                    {
                         show_item(ui, data, child_group_idx);
-                        // ui.label(data.functions_section.function_groups[child_group_idx].name);
-
-                        cur_child =
-                            data.functions_section.function_groups[child_group_idx].next_sibling;
                     }
                 },
             )
             .header_response
-            .on_hover_text(data.functions_section.function_groups[group_idx].original_name);
+            .on_hover_text(
+                data.functions_section
+                    .function_groups
+                    .get(group_idx)
+                    .original_name,
+            );
         }
 
-        for i in 0..data.functions_section.function_groups.len() {
-            if data.functions_section.function_groups[i].parent.is_none() {
-                show_item(ui, data, i);
-            }
-        }
+        // for i in 0..data.functions_section.function_groups.len() {
+        //     if data
+        //         .functions_section
+        //         .function_groups
+        //         .get(i)
+        //         .parent
+        //         .is_none()
+        //     {
+        //         show_item(ui, data, i);
+        //     }
+        // }
+        show_item(ui, data, 0);
 
         // ui.collapsing(dbg!(data.functions_section.function_groups[2].name), |ui| {
         //     let mut cur_child = data.functions_section.function_groups[2].first_child;

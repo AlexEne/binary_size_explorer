@@ -13,7 +13,7 @@ use hashbrown::{DefaultHashBuilder, HashMap};
 use petgraph::{algo::dominators::Dominators, visit};
 use wasmparser::{Encoding, FuncType, FunctionBody, Operator};
 
-use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String};
+use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree};
 
 pub struct WasmData<'a> {
     pub bytes: &'a [u8],
@@ -26,8 +26,6 @@ pub struct WasmData<'a> {
 
     /// Functions section
     pub functions_section: FunctionSection<'a>,
-
-    pub functions_dominators: Option<Dominators<usize>>,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -37,9 +35,14 @@ pub struct SymbolName<'a> {
 }
 
 impl<'a> SymbolName<'a> {
-    // pub fn new(hash: u64, name: &'a str) -> Self {
-    //     Self { hash, name }
-    // }
+    pub fn root() -> Self {
+        const NAME: &'static str = "<root>";
+        let mut hasher = DefaultHasher::new();
+        NAME.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        Self { hash, name: NAME }
+    }
 
     pub fn new_with_parent(parent: SymbolName<'a>, name: &'a str) -> Self {
         let mut hasher = DefaultHasher::new();
@@ -69,7 +72,20 @@ impl<'a> WasmData<'a> {
             function_original_names: Array::new(arena, 0),
             function_bodies: Array::new(arena, 0),
             function_called: Array::new(arena, 0),
-            function_groups: Array::new(arena, 0),
+            function_groups: Tree::new(
+                arena,
+                0,
+                FunctionGroup {
+                    ty: FunctionGroupType::Namespace,
+                    name: SymbolName::root(),
+                    demangled_name: "",
+                    original_name: "",
+                    implements: None,
+                    decl_file: "",
+                    decl_line: 0,
+                    fn_index: None,
+                },
+            ),
             function_count: 0,
         };
 
@@ -84,7 +100,21 @@ impl<'a> WasmData<'a> {
         let mut function_index_lookup =
             HashMap::<&str, usize, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
         let mut offset_index_lookup = HashMap::<DebugInfoOffset<usize>, usize>::new();
-        let mut function_groups = Array::new(arena, 0);
+        // let mut function_groups = Array::new(arena, 0);
+        let mut function_groups = Tree::new(
+            arena,
+            0,
+            FunctionGroup {
+                ty: FunctionGroupType::Namespace,
+                name: SymbolName::root(),
+                demangled_name: "",
+                original_name: "",
+                implements: None,
+                decl_file: "",
+                decl_line: 0,
+                fn_index: None,
+            },
+        );
 
         let mut debug_sections = HashMap::new();
 
@@ -189,7 +219,22 @@ impl<'a> WasmData<'a> {
                     }
 
                     // TODO: (bruno) something better than 5 * count!
-                    function_groups = Array::new(arena, 10000 * count as usize);
+                    // function_groups = Array::new(arena, 10000 * count as usize);
+                    function_groups = Tree::new(
+                        arena,
+                        10000 * count as usize,
+                        FunctionGroup {
+                            ty: FunctionGroupType::Namespace,
+                            name: SymbolName::root(),
+                            demangled_name: "",
+                            original_name: "",
+                            implements: None,
+                            decl_file: "",
+                            decl_line: 0,
+                            fn_index: None,
+                        },
+                    );
+
                     function_group_name_lookup =
                         HashMap::with_capacity_in(5 * count as usize, &scratch);
 
@@ -449,23 +494,7 @@ impl<'a> WasmData<'a> {
         .unwrap();
 
         // let mut namespace_stack = Array::new(&scratch, 128);
-        let root_symbol_name = SymbolName {
-            hash: 0,
-            name: "<root>",
-        };
-        function_groups.push(FunctionGroup {
-            ty: FunctionGroupType::Namespace,
-            name: root_symbol_name,
-            original_name: "",
-            demangled_name: "",
-            implements: None,
-            fn_index: None,
-            parent: None,
-            // prev_sibling: None,
-            next_sibling: None,
-            first_child: None,
-            last_child: None,
-        });
+        let root_symbol_name = function_groups.root().name;
 
         let mut group_index_stack = Array::new(&scratch, 128);
 
@@ -495,13 +524,24 @@ impl<'a> WasmData<'a> {
             let mut prev_parent_group_name = root_symbol_name;
 
             let mut entries = unit_header.entries(&abbreviations);
-            'entry_loop: while let Ok(Some((mut offset, entry))) = entries.next_dfs() {
+            while let Ok(Some((mut offset, entry))) = entries.next_dfs() {
                 assert!(offset <= 1, "Unexpected offset: {}>1", offset);
 
                 println!("offset {offset}");
                 // If offset is negative, it means that we are climbing back the tree
                 while offset < 0 {
                     group_index_stack.pop();
+                    // if let Some((idx, _)) = group_index_stack.pop() {
+                    //     if idx == function_groups.len() - 1
+                    //         && matches!(
+                    //             dbg!(function_groups.get(idx).ty),
+                    //             FunctionGroupType::Namespace | FunctionGroupType::Struct
+                    //         )
+                    //     {
+                    //         function_groups.pop();
+                    //     }
+                    // }
+
                     // parent_group_index = function_groups[parent_group_index].parent.unwrap();
                     offset += 1;
                 }
@@ -527,13 +567,6 @@ impl<'a> WasmData<'a> {
                         .unwrap_or("");
                     // .expect("Failed to get name of namespace");
 
-                    // let name_value = name_attr
-                    //     .string_value(&dwarf.debug_str)
-                    //     .expect("Failed to parse namespace 'name' attribute value");
-
-                    // let name_str = unsafe { str::from_utf8_unchecked(name_value.slice()) };
-                    println!("namespace: {name_str}");
-
                     let new_group_name = SymbolName::new_with_parent(parent_group_name, name_str);
 
                     // let mut hasher = DefaultHasher::new();
@@ -546,8 +579,8 @@ impl<'a> WasmData<'a> {
                             Some(group_idx) => group_idx,
                             None => {
                                 // Add child
-                                let parent_group: FunctionGroup<'_> =
-                                    function_groups[parent_group_index];
+                                // let parent_group: FunctionGroup<'_> =
+                                //     *function_groups.get(parent_group_index);
 
                                 // if name_str.is_empty() {
                                 //     println!("WTF");
@@ -561,36 +594,20 @@ impl<'a> WasmData<'a> {
                                     _ => FunctionGroupType::Namespace,
                                 };
 
-                                function_groups.push(FunctionGroup {
-                                    ty,
-                                    name: new_group_name,
-                                    original_name: name_str,
-                                    demangled_name: name_str,
-                                    implements: None,
-                                    fn_index: None,
-                                    parent: Some(parent_group_index),
-                                    next_sibling: None,
-                                    first_child: None,
-                                    last_child: None,
-                                });
+                                function_groups.add_child(
+                                    parent_group_index,
+                                    FunctionGroup {
+                                        ty,
+                                        name: new_group_name,
+                                        original_name: name_str,
+                                        demangled_name: name_str,
+                                        implements: None,
+                                        decl_file: "",
+                                        decl_line: 0,
+                                        fn_index: None,
+                                    },
+                                );
                                 let new_function_group_index = function_groups.len() - 1;
-
-                                if parent_group.first_child.is_some() {
-                                    let first_child_index =
-                                        function_groups[parent_group_index].first_child.unwrap();
-                                    let last_child_index =
-                                        function_groups[parent_group_index].last_child.unwrap();
-
-                                    function_groups[parent_group_index].last_child =
-                                        Some(new_function_group_index);
-                                    function_groups[last_child_index].next_sibling =
-                                        Some(new_function_group_index);
-                                } else {
-                                    function_groups[parent_group_index].first_child =
-                                        Some(new_function_group_index);
-                                    function_groups[parent_group_index].last_child =
-                                        Some(new_function_group_index);
-                                }
 
                                 let offset =
                                     entry.offset().to_debug_info_offset(&unit_header).unwrap();
@@ -684,15 +701,15 @@ impl<'a> WasmData<'a> {
                                 inlined = true;
                             }
                         }
-                        // DW_AT_decl_file => {
-                        //     println!("{} {:?}", name, attr);
+                        DW_AT_decl_file => {
+                            println!("{} {:?}", name, attr);
 
-                        //     let attr_value = attr
-                        //         .string_value(&dwarf.debug_str)
-                        //         .expect("Failed to parse subprogram 'decl_file' attribute value");
+                            let attr_value = attr
+                                .string_value(&dwarf.debug_str)
+                                .expect("Failed to parse subprogram 'decl_file' attribute value");
 
-                        //     decl_file = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
-                        // }
+                            decl_file = unsafe { str::from_utf8_unchecked(attr_value.slice()) };
+                        }
                         // DW_AT_decl_line => {
                         //     println!("{} {:?}", name, attr);
                         //     let attr_value = match attr.raw_value() {
@@ -730,54 +747,41 @@ impl<'a> WasmData<'a> {
                             continue;
                         };
                         // let index: usize = offset_index_lookup.get(&offset).copied().unwrap();
-                        println!("Function group ty {:?}", function_groups[index].ty);
+                        println!("Function group ty {:?}", function_groups.get(index).ty);
                         assert!(
-                            function_groups[index].ty == FunctionGroupType::FunctionInstance
-                                || function_groups[index].ty
+                            function_groups.get(index).ty == FunctionGroupType::FunctionInstance
+                                || function_groups.get(index).ty
                                     == FunctionGroupType::FunctionInlinedInstance
                         );
-                        function_groups[index].ty = FunctionGroupType::FunctionInlinedInstance;
+                        function_groups.get_mut(index).ty =
+                            FunctionGroupType::FunctionInlinedInstance;
                     }
                 } else {
                     if name.starts_with("print_foo") {
                         println!("Break");
                     }
 
-                    let parent_group = function_groups[parent_group_index];
+                    let parent_group = *function_groups.get(parent_group_index);
 
                     let subprogram_group_index = if let Some(subprogram_index) =
                         function_group_name_lookup.get(&subprogram_symbol_name)
                     {
                         *subprogram_index
                     } else {
-                        function_groups.push(FunctionGroup {
-                            ty: FunctionGroupType::Function,
-                            name: subprogram_symbol_name,
-                            original_name: "",
-                            demangled_name: "",
-                            implements: None,
-                            fn_index: None,
-                            parent: Some(parent_group_index),
-                            next_sibling: None,
-                            first_child: None,
-                            last_child: None,
-                        });
+                        function_groups.add_child(
+                            parent_group_index,
+                            FunctionGroup {
+                                ty: FunctionGroupType::Function,
+                                name: subprogram_symbol_name,
+                                original_name: "",
+                                demangled_name: "",
+                                implements: None,
+                                decl_file: "",
+                                decl_line: 0,
+                                fn_index: None,
+                            },
+                        );
                         let new_function_group_index = function_groups.len() - 1;
-
-                        if parent_group.first_child.is_some() {
-                            let last_child_index =
-                                function_groups[parent_group_index].last_child.unwrap();
-
-                            function_groups[parent_group_index].last_child =
-                                Some(new_function_group_index);
-                            function_groups[last_child_index].next_sibling =
-                                Some(new_function_group_index);
-                        } else {
-                            function_groups[parent_group_index].first_child =
-                                Some(new_function_group_index);
-                            function_groups[parent_group_index].last_child =
-                                Some(new_function_group_index);
-                        }
 
                         // let offset = entry.offset().to_debug_info_offset(&unit_header).unwrap();
                         // offset_index_lookup.insert(offset, new_function_group_index);
@@ -796,12 +800,9 @@ impl<'a> WasmData<'a> {
                         if let Some((type_name, trait_name)) =
                             extract_trait_from_demangled_name(demangled_name)
                         {
-                            if trait_name == "as" && type_name == "*const" {
-                                println!("Original name: {}", linkage_name);
-                            }
-
-                            function_groups[parent_group_index].original_name = type_name;
-                            function_groups[parent_group_index].implements = Some(trait_name);
+                            function_groups.get_mut(parent_group_index).original_name = type_name;
+                            function_groups.get_mut(parent_group_index).implements =
+                                Some(trait_name);
                         }
                     }
 
@@ -812,132 +813,41 @@ impl<'a> WasmData<'a> {
                     {
                         *new_function_group_index
                     } else {
-                        function_groups.push(FunctionGroup {
-                            ty: if !inlined {
-                                FunctionGroupType::FunctionInstance
-                            } else {
-                                FunctionGroupType::FunctionInlinedInstance
+                        function_groups.add_child(
+                            subprogram_group_index,
+                            FunctionGroup {
+                                ty: if !inlined {
+                                    FunctionGroupType::FunctionInstance
+                                } else {
+                                    FunctionGroupType::FunctionInlinedInstance
+                                },
+                                name: subprogram_symbol_name,
+                                original_name: linkage_name,
+                                demangled_name: demangled_name,
+                                implements: None,
+                                decl_file: decl_file,
+                                decl_line: decl_line,
+                                fn_index: None,
                             },
-                            name: subprogram_symbol_name,
-                            original_name: linkage_name,
-                            demangled_name: demangled_name,
-                            implements: None,
-                            fn_index: None,
-                            parent: Some(subprogram_group_index),
-                            next_sibling: None,
-                            first_child: None,
-                            last_child: None,
-                        });
+                        );
                         let new_function_group_index = function_groups.len() - 1;
-
-                        if name
-                            == "_RNvMs0_NtCsdc2esZvPOXV_5alloc7raw_vecINtB5_6RawVechE16with_capacity_inCskFvGLp3XVtI_15wasm_playground"
-                        {
-                            println!("Break");
-                        }
-
-                        let subprogram_group = function_groups[subprogram_group_index];
-
-                        if subprogram_group.first_child.is_some() {
-                            let last_child_index =
-                                function_groups[subprogram_group_index].last_child.unwrap();
-
-                            function_groups[subprogram_group_index].last_child =
-                                Some(new_function_group_index);
-                            function_groups[last_child_index].next_sibling =
-                                Some(new_function_group_index);
-                        } else {
-                            function_groups[subprogram_group_index].first_child =
-                                Some(new_function_group_index);
-                            function_groups[subprogram_group_index].last_child =
-                                Some(new_function_group_index);
-                        }
 
                         new_function_group_index
                     };
 
                     let offset = entry.offset().to_debug_info_offset(&unit_header).unwrap();
-                    println!("Adding {} -> {}", offset.0, new_function_group_index);
                     offset_index_lookup.insert(offset, new_function_group_index);
                 }
             }
         }
 
         functions_section.function_groups = function_groups;
-        // function_groups.shrink_to_fit();
 
-        let mut wasm_data = Self {
+        Self {
             bytes,
             version,
             types_section,
             functions_section,
-            functions_dominators: None,
-        };
-
-        let dominators = petgraph::algo::dominators::simple_fast(&wasm_data, usize::MAX);
-
-        // for dom in dominators.immediately_dominated_by(dominators.root()) {
-        //     println!("{:?}", dom);
-        // }
-
-        // print(&wasm_data, dominators.root(), &dominators, 0);
-
-        wasm_data.functions_dominators = Some(dominators);
-
-        wasm_data
-    }
-}
-
-fn print<'a>(data: &WasmData<'a>, node: usize, dominators: &Dominators<usize>, indent: usize) {
-    for _ in 0..indent {
-        print!("\t");
-    }
-
-    if node != usize::MAX {
-        println!("{}", data.functions_section.function_names[node]);
-    } else {
-        println!("root");
-    }
-
-    for child in dominators.immediately_dominated_by(node) {
-        if node != child {
-            print(data, child, dominators, indent + 1);
-        }
-    }
-}
-
-impl<'a> visit::GraphBase for WasmData<'a> {
-    type EdgeId = ();
-
-    type NodeId = usize;
-}
-
-impl<'a> visit::Visitable for WasmData<'a> {
-    type Map = HashSet<usize>;
-
-    fn visit_map(self: &Self) -> Self::Map {
-        HashSet::with_capacity(self.functions_section.function_count)
-    }
-
-    fn reset_map(self: &Self, map: &mut Self::Map) {
-        map.clear();
-    }
-}
-
-impl<'a, 'b> visit::IntoNeighbors for &'b WasmData<'a> {
-    type Neighbors = std::vec::IntoIter<usize>;
-
-    fn neighbors(self, a: Self::NodeId) -> Self::Neighbors {
-        if a == usize::MAX {
-            let mut neighbors = Vec::with_capacity(self.functions_section.function_count);
-            for i in 0..self.functions_section.function_count {
-                neighbors.push(i);
-            }
-            neighbors.into_iter()
-        } else {
-            let mut neighbors = Vec::with_capacity(self.functions_section.function_called[a].len());
-            neighbors.extend_from_slice(self.functions_section.function_called[a].as_slice());
-            neighbors.into_iter()
         }
     }
 }
@@ -959,7 +869,7 @@ pub struct FunctionSection<'a> {
     pub function_bodies: Array<'a, FunctionBody<'a>>,
     pub function_called: Array<'a, Array<'a, usize>>,
 
-    pub function_groups: Array<'a, FunctionGroup<'a>>,
+    pub function_groups: Tree<'a, FunctionGroup<'a>>,
     pub function_count: usize,
 }
 
@@ -990,12 +900,13 @@ pub struct FunctionGroup<'a> {
     pub original_name: &'a str,
     pub demangled_name: &'a str,
     pub implements: Option<&'a str>,
+    pub decl_file: &'a str,
+    pub decl_line: usize,
     pub fn_index: Option<usize>,
-    pub parent: Option<usize>,
-    // pub prev_sibling: Option<usize>,
-    pub next_sibling: Option<usize>,
-    pub first_child: Option<usize>,
-    pub last_child: Option<usize>,
+    // pub parent: Option<usize>,
+    // pub next_sibling: Option<usize>,
+    // pub first_child: Option<usize>,
+    // pub last_child: Option<usize>,
 }
 
 fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {

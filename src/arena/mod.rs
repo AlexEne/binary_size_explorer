@@ -8,6 +8,7 @@ use std::{
 pub mod array;
 pub mod scratch;
 pub mod string;
+pub mod tree;
 
 #[cfg(unix)]
 pub mod memory {
