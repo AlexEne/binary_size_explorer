@@ -1,5 +1,6 @@
 use std::{
     hash::Hash,
+    mem::forget,
     ops::{Deref, DerefMut, Index, IndexMut},
     ptr::{NonNull, copy_nonoverlapping, slice_from_raw_parts_mut},
     slice::{self, SliceIndex},
@@ -297,7 +298,9 @@ impl<'a, T> Array<'a, T> {
     }
 
     pub fn to_slice(self) -> &'a [T] {
-        unsafe { slice::from_raw_parts(self.as_ptr(), self.len) }
+        let slice = unsafe { slice::from_raw_parts(self.as_ptr(), self.len) };
+        forget(self);
+        slice
     }
 
     /// Returns a raw pointer to the array's buffer.
@@ -360,6 +363,13 @@ impl<'a, T> Array<'a, T> {
     #[inline]
     pub fn as_non_null(&mut self) -> NonNull<T> {
         self.buf
+    }
+}
+
+impl<T> Drop for Array<'_, T> {
+    fn drop(&mut self) {
+        self.arena
+            .dealloc(self.buf.cast(), self.capacity * std::mem::size_of::<T>());
     }
 }
 

@@ -8,6 +8,7 @@ use std::{
 pub mod array;
 pub mod scratch;
 pub mod string;
+pub mod tree;
 
 #[cfg(unix)]
 pub mod memory {
@@ -249,6 +250,17 @@ impl Arena {
         unsafe { NonNull::slice_from_raw_parts(self.buffer.add(start), end - start) }
     }
 
+    pub fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
+        // It only makes sense to deallocate the last allocation.
+        // The arena doesn't really handle deallocation and it will
+        // not re-allocate any released memory in between two allocations
+        unsafe {
+            if ptr.add(size) == self.buffer.add(self.offset.get()) {
+                self.offset.set(self.offset.get().unchecked_sub(size));
+            }
+        }
+    }
+
     pub fn shrink(&self, ptr: NonNull<u8>, old_size: usize, new_size: usize) {
         debug_assert!(old_size >= new_size);
 
@@ -292,8 +304,15 @@ unsafe impl Allocator for Arena {
         Ok(self.alloc_raw(layout.size(), layout.align()))
     }
 
-    unsafe fn deallocate(&self, _: NonNull<u8>, _: std::alloc::Layout) {
-        // No-op
+    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: std::alloc::Layout) {
+        // We only really deallocate if this is the last allocation in the arena.
+        if unsafe { ptr.add(layout.size()) == self.buffer.add(self.offset.get()) } {
+            unsafe {
+                self.offset
+                    .set(self.offset.get().unchecked_sub(layout.size()));
+                // _ = self.buffer.sub(layout.size());
+            };
+        }
     }
 
     fn allocate_zeroed(

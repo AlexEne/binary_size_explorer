@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 edition = "2024"
 
 [dependencies]
+bitflags = "2.9.1"
 egui = "0.31"
 egui_dock = { version = "0.16", features = ["serde"] }
 egui-file-dialog = "0.10.0"
@@ -26,6 +27,9 @@ env_logger = "0.11.8"
 hashbrown = { version = "0.15", default-features = false, features = [
     'rustc-dep-of-std',
 ] }
+gimli = "0.32.0"
+petgraph = "0.6.2"
+rustc-demangle = "0.1.25"
 serde = { version = "1.0.219", features = ["derive"] }
 twiggy-analyze = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }
 twiggy-opt = { git = "https://github.com/AlexEne/twiggy.git", branch = "wip-dissassembly", version = "0.7" }

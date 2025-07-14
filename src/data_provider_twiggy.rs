@@ -4,7 +4,8 @@ use crate::{
         CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
     },
-    gui::tree_view::{TreeItemState, TreeState},
+    gui::tree_view::{TreeItemStateFlags, TreeState},
+    wasm::parser::{FunctionGroup, FunctionGroupType, WasmData},
 };
 use addr2line::{
     LookupResult,
@@ -20,31 +21,8 @@ use std::{ops::Range, time::Instant};
 use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::{BinaryReader, ValType};
 
-#[derive(Clone, Copy)]
-pub enum SectionType {
-    TypeSection,
-    ImportSection,
-    FunctionSection,
-    TableSection,
-    MemorySection,
-    TagSection,
-    GlobalSection,
-    ExportSection,
-    StartSection,
-    ElementSection,
-    DataCountSection,
-    DataSection,
-    CodeSection,
-    CustomSection,
-    UnknownSection,
-}
-
-#[derive(Clone, Copy)]
-pub struct Section<'a> {
-    pub ty: SectionType,
-    pub name: &'a str,
-    pub offset: usize,
-    pub length: usize,
+pub struct FunctionItemState {
+    pub size: u32,
 }
 
 pub struct FunctionData<'a> {
@@ -53,8 +31,7 @@ pub struct FunctionData<'a> {
 }
 
 pub struct DataProviderTwiggy<'a> {
-    /// The raw binary data of the loaded wasm file.
-    pub wasm_data: &'a [u8],
+    pub wasm_data: WasmData<'a>,
 
     pub view_mode: ViewMode,
     pub raw_data: Array<'a, FunctionData<'a>>,
@@ -63,9 +40,7 @@ pub struct DataProviderTwiggy<'a> {
     pub total_percent: f32,
 
     pub top_view_items_filtered: Vec<usize, &'a Arena>,
-    pub dominator_view_tree_state: TreeState<'a>,
-
-    pub sections: Array<'a, Section<'a>>,
+    pub dominator_state: TreeState<'a, FunctionGroup<'a>, FunctionItemState>,
 
     /// The array of code locations loaded from the file.
     code_locations: Array<'a, CodeLocation<'a>>,
@@ -77,11 +52,13 @@ pub struct DataProviderTwiggy<'a> {
 
 impl<'a> DataProviderTwiggy<'a> {
     #[profiling::function]
-    pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Self {
+    pub fn from_path<P: AsRef<std::path::Path>>(arena: &'a Arena, path: P) -> Result<Self, ()> {
         let start = Instant::now();
 
-        let wasm_data: &'a [u8] = {
-            let mut file = File::open(path).unwrap();
+        let file_bytes: &'a [u8] = {
+            let Ok(mut file) = File::open(path) else {
+                return Err(());
+            };
             let size = file
                 .metadata()
                 .map(|m| m.len() as usize)
@@ -100,194 +77,55 @@ impl<'a> DataProviderTwiggy<'a> {
             wasm_data
         };
 
-        let mut items = twiggy_parser::parse(&wasm_data).unwrap();
-        items.compute_retained_sizes();
-        let mut id_to_idx = HashMap::new();
-
-        let mut parser = wasmparser::Parser::new(0);
-
-        let mut code_section_start: u64 = 0;
-
-        let mut sections = Array::new(arena, 128 * 1024);
-        let mut offset = 0;
-        while offset < wasm_data.len() {
-            let chunck = parser
-                .parse(&wasm_data[offset..], true)
-                .expect("Failed to parse wasm data");
-            match chunck {
-                wasmparser::Chunk::Parsed { consumed, payload } => {
-                    match payload {
-                        wasmparser::Payload::TypeSection(_) => sections.push(Section {
-                            ty: SectionType::TypeSection,
-                            name: "Type Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::ImportSection(_) => sections.push(Section {
-                            ty: SectionType::ImportSection,
-                            name: "Import Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::FunctionSection(_) => sections.push(Section {
-                            ty: SectionType::FunctionSection,
-                            name: "Function Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::TableSection(_) => sections.push(Section {
-                            ty: SectionType::TableSection,
-                            name: "Table Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::MemorySection(_) => sections.push(Section {
-                            ty: SectionType::MemorySection,
-                            name: "Memory Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::TagSection(_) => sections.push(Section {
-                            ty: SectionType::TagSection,
-                            name: "Tag Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::GlobalSection(_) => sections.push(Section {
-                            ty: SectionType::GlobalSection,
-                            name: "Global Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::ExportSection(_) => sections.push(Section {
-                            ty: SectionType::ExportSection,
-                            name: "Export Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::StartSection { .. } => sections.push(Section {
-                            ty: SectionType::StartSection,
-                            name: "Start Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::ElementSection(_) => sections.push(Section {
-                            ty: SectionType::ElementSection,
-                            name: "Element Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::DataCountSection { .. } => sections.push(Section {
-                            ty: SectionType::DataCountSection,
-                            name: "DataCount Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::DataSection(_) => sections.push(Section {
-                            ty: SectionType::DataSection,
-                            name: "Data Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::CodeSectionStart { range, .. } => {
-                            code_section_start = range.start as u64
-                        }
-                        wasmparser::Payload::CodeSectionEntry(_) => sections.push(Section {
-                            ty: SectionType::CodeSection,
-                            name: "Code Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::CustomSection(_) => sections.push(Section {
-                            ty: SectionType::CustomSection,
-                            name: "Custom Section",
-                            offset,
-                            length: consumed,
-                        }),
-                        wasmparser::Payload::UnknownSection { .. } => sections.push(Section {
-                            ty: SectionType::UnknownSection,
-                            name: "Unknown Section",
-                            offset,
-                            length: consumed,
-                        }),
-
-                        _ => {}
-                    }
-                    offset += consumed;
-                }
-                wasmparser::Chunk::NeedMoreData(_) => panic!("Wasm data is incomplete"),
-            }
-        }
-        sections.shrink_to_fit();
-
-        let ignore_item_by_name = |name: &str| -> bool {
-            name.starts_with("custom section '.debug_") || name == "\"function names\" subsection"
-        };
+        let (wasm_data, function_groups) = WasmData::from_bytes(arena, file_bytes);
 
         let mut item_count = 0;
         let mut total_size = 0;
-        for item in items.iter() {
-            if !ignore_item_by_name(item.name()) {
-                item_count += 1;
-                total_size += item.size();
-            }
+        for idx in 0..wasm_data.functions_section.function_count {
+            item_count += 1;
+            total_size += wasm_data.functions_section.function_bodies[idx]
+                .as_bytes()
+                .len();
         }
 
         let mut raw_data = Array::new(arena, item_count);
-        let modules = Addr2lineModules::parse(&wasm_data).ok();
+        let modules = Addr2lineModules::parse(&wasm_data.bytes).ok();
         let mut code_location_count = 0;
 
-        for item in items.iter() {
-            // Filter out the meta root item
-            if item.id() == items.meta_root() {
-                continue;
-            }
+        for idx in 0..wasm_data.functions_section.function_count {
+            let name = wasm_data.functions_section.function_names[idx];
+            let monomorphization_of = "";
 
-            let name = item.name();
-            let monomorphization_of = item.monomorphization_of();
-
-            if ignore_item_by_name(item.name()) {
-                // Skip debug info from every stat
-                continue;
-            }
-
-            let shallow_size_bytes = item.size();
+            let shallow_size_bytes = wasm_data.functions_section.function_bodies[idx]
+                .as_bytes()
+                .len() as u32;
             let shallow_size_percent = (shallow_size_bytes as f32 / total_size as f32) * 100.0;
 
-            let retained_size_bytes = items.retained_size(item.id());
+            let retained_size_bytes = wasm_data.functions_section.function_bodies[idx]
+                .as_bytes()
+                .len() as u32;
             let retained_size_percent = (retained_size_bytes as f32 / total_size as f32) * 100.0;
 
-            let range = item.bytes_range().clone();
+            let range = wasm_data.functions_section.function_bodies[idx].range();
 
-            let (locals, function_ops) = match item.kind() {
-                twiggy_ir::ItemKind::Code(_) => {
-                    // The function body is what we save in the range.
-                    // In WASM the Code section is layed out as:
-                    // CodeStart (0x0a) | CodeSectionSize(bytes) | FunctionCount | FunctionBodySize(Bytes) | LocalsSize | Locals | Operators
-                    // We assume that range.start is starting with LocalsSize
-                    //   and that range.end-range.start is equal FunctionBodySize(Bytes)
-                    // We set the reader offset to 0 since range is an absolute offset in the wasm file.
-                    // Decent reference here: https://blog.ttulka.com/learning-webassembly-2-wasm-binary-format/
-                    let (locals, function_ops) =
-                        get_locals_and_ops_for_function(arena, wasm_data, &range);
+            // The function body is what we save in the range.
+            // In WASM the Code section is layed out as:
+            // CodeStart (0x0a) | CodeSectionSize(bytes) | FunctionCount | FunctionBodySize(Bytes) | LocalsSize | Locals | Operators
+            // We assume that range.start is starting with LocalsSize
+            //   and that range.end-range.start is equal FunctionBodySize(Bytes)
+            // We set the reader offset to 0 since range is an absolute offset in the wasm file.
+            // Decent reference here: https://blog.ttulka.com/learning-webassembly-2-wasm-binary-format/
+            let (locals, function_ops) =
+                get_locals_and_ops_for_function(arena, wasm_data.bytes, &range);
 
-                    if modules.is_some() {
-                        code_location_count += function_ops.len();
-                    }
-
-                    (locals, function_ops)
-                }
-                _ => (Array::new(arena, 0), Array::new(arena, 0)),
-            };
-
-            id_to_idx.insert(item.id(), raw_data.len());
+            if modules.is_some() {
+                code_location_count += function_ops.len();
+            }
 
             raw_data.push(FunctionData {
                 function_property: FunctionProperty {
                     raw_name: String::from_str(arena, name).to_str(),
-                    demangled_name: Some(String::from_str(arena, name).to_str()),
-                    monomorphization_of: monomorphization_of
-                        .map(|m| String::from_str(arena, m).to_str()),
+                    monomorphization_of: Some(monomorphization_of),
                     shallow_size_bytes,
                     shallow_size_percent,
                     retained_size_bytes,
@@ -308,6 +146,8 @@ impl<'a> DataProviderTwiggy<'a> {
         // Add -> CL index
         let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
             HashMap::with_capacity_in(code_location_count, arena);
+
+        let code_section_start = wasm_data.functions_section.range.start as u64;
 
         if let Some(mut modules) = modules {
             let (mut context, _) = modules
@@ -347,71 +187,23 @@ impl<'a> DataProviderTwiggy<'a> {
             }
         }
 
-        let dominator_tree = items.dominator_tree();
-        let mut tree_items: Array<'_, TreeItemState> = Array::new(arena, raw_data.len() * 2);
-
-        let scratch = scratch_arena(&[arena]);
-        let mut node_stack = Array::new(&scratch, raw_data.len() * 2);
-        let mut children_scratch = Array::new(&scratch, raw_data.len() * 2);
-        node_stack.push((0, items.meta_root()));
-
-        while let Some((parent_index, id)) = node_stack.pop() {
-            let index = tree_items.len();
-            let indent = if !tree_items.is_empty() {
-                tree_items[parent_index].indent + 1
-            } else {
-                0
-            };
-            tree_items.push(TreeItemState {
-                index: id_to_idx.get(&id).copied().unwrap_or(0),
-                parent: parent_index,
-                descendants_count: 0,
-                opened: false,
-                force_opened: false,
-                visible: true,
-                indent,
-            });
-
-            if let Some(children) = dominator_tree.get(&id) {
-                children_scratch.clear();
-                children_scratch.extend_from_slice(&children[..]);
-
-                // Order as asc because children will be processed
-                // in the reverse order
-                children_scratch.sort_by(|a, b| {
-                    let a: usize = id_to_idx.get(a).copied().unwrap_or(0);
-                    let b: usize = id_to_idx.get(b).copied().unwrap_or(0);
-                    raw_data[a]
-                        .function_property
-                        .retained_size_bytes
-                        .cmp(&raw_data[b].function_property.retained_size_bytes)
-                });
-
-                for &child in children_scratch.iter() {
-                    node_stack.push((index, child));
-                }
-            }
-        }
-        tree_items.shrink_to_fit();
-
-        for index in (0..tree_items.len()).rev() {
-            let parent = tree_items[index].parent;
-            let descendants_count = tree_items[index].descendants_count;
-            tree_items[parent].descendants_count += descendants_count + 1;
-        }
-
         let top_view_items_filtered = Vec::with_capacity_in(raw_data.len(), arena);
-        let dominator_view_tree_state = TreeState::new(arena, tree_items);
+        let dominator_state: TreeState<'a, FunctionGroup<'a>, FunctionItemState> =
+            TreeState::from_tree(
+                arena,
+                function_groups,
+                |item, _| FunctionItemState { size: item.size },
+                |(_, a), (_, b)| b.size.cmp(&a.size),
+            );
 
         let mut provider = DataProviderTwiggy {
-            wasm_data,
+            wasm_data: wasm_data,
             view_mode: ViewMode::Tops,
             raw_data,
             total_size: 0,
             total_percent: 0.0,
             top_view_items_filtered,
-            dominator_view_tree_state,
-            sections,
+            dominator_state,
             code_locations,
             locations_reverse_map,
             addr_to_location,
@@ -420,7 +212,7 @@ impl<'a> DataProviderTwiggy<'a> {
 
         println!("Total time {}", (Instant::now() - start).as_secs_f32());
 
-        provider
+        Ok(provider)
     }
 }
 
@@ -467,18 +259,23 @@ impl DataProviderTwiggy<'_> {
     /// should be called to update the internal state shared
     /// between tops and dominators view modes.
     fn recompute_index_map<'a>(&mut self, filter: Filter<'a>) {
+        let function_section = &self.wasm_data.functions_section;
+
         // Update tops
         {
             self.top_view_items_filtered.clear();
             self.total_size = 0;
             self.total_percent = 0.0;
-            for idx in 0..self.raw_data.len() {
+
+            for idx in 0..function_section.function_count {
                 let scratch = scratch_arena(&[]);
 
-                let item = &self.raw_data[idx].function_property;
+                let function_name = function_section.function_names[idx];
+                let function_size = function_section.function_sizes[idx];
                 let added = match &filter {
                     Filter::NameFilter { name } => {
-                        let mut raw_name = String::new(&scratch, item.raw_name.len());
+                        let mut raw_name = String::new(&scratch, function_name.len());
+                        raw_name.push_str(function_name);
                         raw_name.make_ascii_lowercase();
 
                         if raw_name.contains(name) {
@@ -495,8 +292,8 @@ impl DataProviderTwiggy<'_> {
                 };
 
                 if added {
-                    self.total_size += item.shallow_size_bytes;
-                    self.total_percent += item.shallow_size_percent;
+                    self.total_size += function_size;
+                    self.total_percent += 0.0;
                 }
             }
 
@@ -516,58 +313,88 @@ impl DataProviderTwiggy<'_> {
 
         // Update dominators
         {
-            let filter = match &filter {
-                Filter::All => "",
-                Filter::NameFilter { name } => name,
-            };
+            fill_tree_view_state(&mut self.dominator_state, &filter);
 
-            self.total_size = 0;
-            self.total_percent = 0.0;
-
-            let mut idx = 1;
-            while idx < self.dominator_view_tree_state.nodes.len() {
-                let item = &self.raw_data[self.dominator_view_tree_state.nodes[idx].index];
-                let name = item.function_property.name();
-
-                // TODO (bruno): remove this string allocation
-                let visible = name.to_lowercase().contains(filter);
-
-                self.dominator_view_tree_state.nodes[idx].force_opened = false;
-                self.dominator_view_tree_state.nodes[idx].visible = visible;
-
-                if visible {
-                    self.total_size += item.function_property.retained_size_bytes;
-                    self.total_percent += item.function_property.retained_size_percent;
-
-                    // Force parents to be visible
-                    let mut cur_idx = self.dominator_view_tree_state.nodes[idx].parent;
-                    while cur_idx > 0 {
-                        let cur_node = &mut self.dominator_view_tree_state.nodes[cur_idx];
-                        cur_node.force_opened = true;
-                        cur_node.visible = true;
-                        cur_idx = cur_node.parent;
-                    }
-
-                    // Clear force_opened from descendants
-                    let mut cur_idx = idx + 1;
-                    while cur_idx
-                        <= idx + self.dominator_view_tree_state.nodes[idx].descendants_count
-                    {
-                        self.dominator_view_tree_state.nodes[cur_idx].force_opened = false;
-                        self.dominator_view_tree_state.nodes[cur_idx].visible = true;
-                        cur_idx += 1;
-                    }
-
-                    idx += self.dominator_view_tree_state.nodes[idx].descendants_count + 1;
-                    continue;
-                }
-
-                idx += 1;
+            if !self.dominator_state.row_indices.is_empty() {
+                self.total_size = self.dominator_state.items_ui_data[0].size;
+            } else {
+                self.total_size = 0;
             }
-
-            self.dominator_view_tree_state.recompute_indices();
         }
     }
+}
+
+fn fill_tree_view_state<'a>(
+    state: &mut TreeState<'a, FunctionGroup<'a>, FunctionItemState>,
+    filter: &Filter,
+) {
+    let start = Instant::now();
+
+    match filter {
+        Filter::All => {
+            for idx in 0..state.items_state.len() {
+                state.items_state[idx]
+                    .flags
+                    .insert(TreeItemStateFlags::VISIBLE);
+                state.items_state[idx]
+                    .flags
+                    .remove(TreeItemStateFlags::FORCE_OPENED);
+            }
+        }
+        Filter::NameFilter { name } => {
+            for idx in 0..state.items_state.len() {
+                let visible = state.tree[idx].value.demangled_name.contains(name);
+
+                state.items_state[idx]
+                    .flags
+                    .set(TreeItemStateFlags::FORCE_OPENED, false);
+                state.items_state[idx]
+                    .flags
+                    .set(TreeItemStateFlags::VISIBLE, visible);
+
+                if visible {
+                    // Force parents to be visible
+                    let mut cur_idx = state.tree[idx].parent.unwrap_or(0);
+                    while cur_idx > 0 {
+                        let cur_node = &mut state.items_state[cur_idx];
+                        cur_node.flags.set(TreeItemStateFlags::FORCE_OPENED, true);
+                        cur_node.flags.set(TreeItemStateFlags::VISIBLE, true);
+                        cur_idx = state.tree[cur_idx].parent.unwrap_or(0);
+                    }
+                }
+            }
+        }
+    };
+
+    println!("Time to filter {}", (Instant::now() - start).as_secs_f32());
+
+    // Reset size and then recompute it by just taking visible nodes into account
+    for idx in 0..state.items_ui_data.len() {
+        state.items_ui_data[idx].size = 0;
+    }
+
+    for idx in (0..state.tree.len()).rev() {
+        if !state.items_state[idx].visible() {
+            continue;
+        }
+
+        let item_ui_data = &mut state.items_ui_data[idx];
+
+        let function_group = &state.tree[idx].value;
+
+        if matches!(
+            function_group.ty,
+            FunctionGroupType::FunctionInstance | FunctionGroupType::FunctionInlinedInstance
+        ) {
+            item_ui_data.size = function_group.size;
+        }
+
+        if let Some(parent_idx) = state.tree[idx].parent {
+            state.items_ui_data[parent_idx].size += state.items_ui_data[idx].size;
+        }
+    }
+
+    state.recompute_indices();
 }
 
 impl<'a> FunctionsView for DataProviderTwiggy<'a> {

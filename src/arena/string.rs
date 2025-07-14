@@ -2,6 +2,7 @@ use core::{slice, str};
 use std::{
     fmt::Debug,
     hash::Hash,
+    mem::forget,
     ops::{Deref, DerefMut}, // ptr::{NonNull, slice_from_raw_parts, slice_from_raw_parts_mut},
 };
 
@@ -46,9 +47,11 @@ impl<'a> String<'a> {
     }
 
     pub fn to_str(self) -> &'a str {
-        unsafe {
+        let str = unsafe {
             str::from_utf8_unchecked(slice::from_raw_parts(self.inner.as_ptr(), self.inner.len()))
-        }
+        };
+        forget(self);
+        str
     }
 }
 

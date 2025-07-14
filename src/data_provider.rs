@@ -5,22 +5,11 @@ use crate::arena::{array::Array, string::String};
 #[derive(Clone, Copy)]
 pub struct FunctionProperty<'a> {
     pub raw_name: &'a str,
-    pub demangled_name: Option<&'a str>,
     pub monomorphization_of: Option<&'a str>,
     pub shallow_size_bytes: u32,
     pub shallow_size_percent: f32,
     pub retained_size_bytes: u32,
     pub retained_size_percent: f32,
-}
-
-impl FunctionProperty<'_> {
-    pub fn name(&self) -> &str {
-        if let Some(demangled_name) = self.demangled_name.as_ref() {
-            demangled_name
-        } else {
-            &self.raw_name
-        }
-    }
 }
 
 pub struct FunctionPropertyDebugInfo<'a> {

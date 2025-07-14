@@ -1,36 +1,129 @@
+use std::{cmp::Ordering, time::Instant};
+
 use egui::{Id, Rect, Response, Sense, Ui, UiBuilder, pos2, scroll_area::ScrollAreaOutput, vec2};
 
-use crate::arena::{Arena, array::Array};
+use crate::arena::{Arena, array::Array, scratch::scratch_arena, tree::Tree};
+
+bitflags::bitflags! {
+    pub struct TreeItemStateFlags: u8 {
+        const OPENED = 0b00000001;
+        const FORCE_OPENED = 0b00000010;
+        const VISIBLE = 0b00000100;
+    }
+}
 
 pub struct TreeItemState {
-    pub parent: usize,
-    pub index: usize,
-    pub descendants_count: usize,
-    pub force_opened: bool,
-    pub opened: bool,
-    pub visible: bool,
+    // pub descendants_count: u32,
+    pub flags: TreeItemStateFlags,
     pub indent: u8,
 }
 
-pub struct TreeState<'a> {
-    pub nodes: Array<'a, TreeItemState>,
-    pub indices: Array<'a, usize>,
+impl TreeItemState {
+    #[inline(always)]
+    pub fn visible(&self) -> bool {
+        self.flags.contains(TreeItemStateFlags::VISIBLE)
+    }
+}
+
+pub struct TreeState<'a, T, D> {
+    /// The input tree used to create this tree state.
+    pub tree: Tree<'a, T>,
+
+    /// This state of the
+    pub items_state: Array<'a, TreeItemState>,
+
+    /// Associated UI data for each item in the tree.
+    pub items_ui_data: Array<'a, D>,
+
+    /// The indices to display the visible items (in order)
+    /// This allows us to compute the order of indices
+    /// to use when displaying each item one after the other.
+    pub row_indices: Array<'a, usize>,
+
+    pub sort_fn: fn((&T, &D), (&T, &D)) -> Ordering,
 
     pub hovered_index: usize,
     pub selected_index: usize,
 }
 
-impl<'a> TreeState<'a> {
-    pub fn new(arena: &'a Arena, mut nodes: Array<'a, TreeItemState>) -> Self {
-        let indices = Array::new(arena, nodes.len());
+impl<'a, T, D> TreeState<'a, T, D> {
+    pub fn from_tree(
+        arena: &'a Arena,
+        tree: Tree<'a, T>,
+        state: fn(&T, usize) -> D,
+        sort: fn((&T, &D), (&T, &D)) -> Ordering,
+    ) -> Self {
+        let mut items_state: Array<'_, TreeItemState> = Array::new(arena, tree.len());
+        let mut items_ui_data: Array<'_, D> = Array::new(arena, tree.len());
 
-        if !nodes.is_empty() {
-            nodes[0].opened = true;
+        for idx in 0..tree.len() {
+            items_state.push(TreeItemState {
+                flags: TreeItemStateFlags::VISIBLE,
+                indent: 0,
+            });
+            items_ui_data.push(state(tree.get(idx), idx));
         }
 
+        fn add_tree_item<T, D>(
+            items_state: &mut Array<'_, TreeItemState>,
+            items_ui_data: &mut Array<'_, D>,
+            tree: &Tree<'_, T>,
+            state: fn(&T, usize) -> D,
+            sort: fn((&T, &D), (&T, &D)) -> Ordering,
+            item_idx: usize,
+            indent: u8,
+        ) {
+            items_state[item_idx].indent = indent;
+
+            let scratch = scratch_arena(&[]);
+            let mut children_idx: Vec<usize, &Arena> = Vec::new_in(&scratch);
+
+            for child_idx in tree.get_children(item_idx) {
+                children_idx.push(child_idx);
+            }
+
+            children_idx.sort_by(|a, b| {
+                sort(
+                    (&tree[*a].value, &items_ui_data[*a]),
+                    (&tree[*b].value, &items_ui_data[*b]),
+                )
+            });
+
+            for child_idx in children_idx {
+                add_tree_item(
+                    items_state,
+                    items_ui_data,
+                    tree,
+                    state,
+                    sort,
+                    child_idx,
+                    indent + 1,
+                );
+            }
+        }
+
+        add_tree_item(
+            &mut items_state,
+            &mut items_ui_data,
+            &tree,
+            state,
+            sort,
+            0,
+            0,
+        );
+
+        if !items_state.is_empty() {
+            items_state[0].flags.set(TreeItemStateFlags::OPENED, true);
+        }
+
+        let row_indices = Array::new(arena, items_state.len());
+
         let mut result = Self {
-            nodes,
-            indices,
+            tree,
+            items_state,
+            items_ui_data,
+            row_indices,
+            sort_fn: sort,
             hovered_index: usize::MAX,
             selected_index: usize::MAX,
         };
@@ -39,44 +132,53 @@ impl<'a> TreeState<'a> {
         result
     }
 
-    #[inline(always)]
-    pub fn node_at(&self, pos: usize) -> &TreeItemState {
-        &self.nodes[self.indices[pos]]
-    }
-
-    #[inline(always)]
-    pub fn node_at_mut(&mut self, pos: usize) -> &mut TreeItemState {
-        &mut self.nodes[self.indices[pos]]
-    }
-
     pub(crate) fn recompute_indices(&mut self) {
-        let mut node_index = 0;
+        let start = Instant::now();
+        self.row_indices.clear();
 
-        self.indices.clear();
+        let scratch = scratch_arena(&[]);
+        let mut node_stack: Vec<_, &Arena> = Vec::with_capacity_in(1024 * 1024, &scratch);
 
-        while node_index < self.nodes.len() {
-            if self.nodes[node_index].visible {
-                self.indices.push(node_index);
+        node_stack.push(0);
 
-                if self.nodes[node_index].parent != 0 {
-                    self.nodes[node_index].indent =
-                        self.nodes[self.nodes[node_index].parent].indent + 1;
-                } else {
-                    self.nodes[node_index].indent = 0;
+        while let Some(idx) = node_stack.pop() {
+            self.row_indices.push(idx);
+
+            if !self.items_state[idx]
+                .flags
+                .intersects(TreeItemStateFlags::OPENED | TreeItemStateFlags::FORCE_OPENED)
+            {
+                continue;
+            }
+
+            let base_index = node_stack.len();
+            for child_idx in self.tree.get_children(idx) {
+                if !self.items_state[child_idx].visible() {
+                    continue;
                 }
-            }
-            // If children are not visible, skip all the descendants
-            if !self.nodes[node_index].opened && !self.nodes[node_index].force_opened {
-                node_index += self.nodes[node_index].descendants_count;
+
+                node_stack.push(child_idx);
             }
 
-            node_index += 1;
+            // Sort
+            node_stack[base_index..].sort_by(|a, b| {
+                (self.sort_fn)(
+                    (&self.tree[*b].value, &self.items_ui_data[*b]),
+                    (&self.tree[*a].value, &self.items_ui_data[*a]),
+                )
+            });
         }
+
+        println!(
+            "Time to compute indices {}",
+            (Instant::now() - start).as_secs_f32()
+        );
     }
 }
 
-pub struct TreeItem<'a> {
-    pub index: usize,
+pub struct TreeItem<'a, T, S> {
+    pub item: &'a T,
+    pub item_state: &'a S,
     pub selected: bool,
     pub response: &'a Response,
 }
@@ -84,14 +186,14 @@ pub struct TreeItem<'a> {
 pub struct TreeView;
 
 impl TreeView {
-    pub fn body(
+    pub fn body<T, S>(
         &mut self,
         ui: &mut Ui,
-        state: &mut TreeState,
+        state: &mut TreeState<T, S>,
         row_height_sans_spacing: f32,
-        mut add_item: impl FnMut(&mut Ui, TreeItem<'_>),
+        mut add_item: impl FnMut(&mut Ui, TreeItem<'_, T, S>),
     ) -> ScrollAreaOutput<()> {
-        let items_count = state.indices.len() - 1;
+        let items_count = state.row_indices.len() - 1;
         let available_height = ui.available_height();
         let available_width = ui.available_width();
 
@@ -116,13 +218,13 @@ impl TreeView {
             })
             .body(|body| {
                 body.rows(18.0, items_count, |mut row| {
-                    let item_index = row.index() + 1;
+                    let item_index = state.row_indices[row.index() + 1];
 
                     row.set_hovered(state.hovered_index == item_index);
                     row.set_selected(state.selected_index == item_index);
 
                     row.col(|ui| {
-                        let id = Id::new(state.node_at(item_index).index);
+                        let id = Id::new(item_index);
                         let id = ui.make_persistent_id(id);
 
                         let available = ui.available_rect_before_wrap();
@@ -132,12 +234,14 @@ impl TreeView {
                         let header_response = ui.interact(rect, id, Sense::click());
 
                         if header_response.clicked() {
-                            let node = state.node_at_mut(item_index);
-                            node.opened = !node.opened;
-
-                            // If node was explicitely closed, disabled force opened
-                            if node.opened == false {
-                                node.force_opened = false;
+                            let node = &mut state.items_state[item_index];
+                            if node.flags.intersects(
+                                TreeItemStateFlags::OPENED | TreeItemStateFlags::FORCE_OPENED,
+                            ) {
+                                node.flags.remove(TreeItemStateFlags::OPENED);
+                                node.flags.remove(TreeItemStateFlags::FORCE_OPENED);
+                            } else {
+                                node.flags.insert(TreeItemStateFlags::OPENED);
                             }
 
                             state.selected_index = item_index;
@@ -149,16 +253,16 @@ impl TreeView {
                             state.hovered_index = item_index;
                         }
 
-                        let openness = if state.node_at(item_index).opened
-                            || state.node_at(item_index).force_opened
-                        {
+                        let openness = if state.items_state[item_index].flags.intersects(
+                            TreeItemStateFlags::OPENED | TreeItemStateFlags::FORCE_OPENED,
+                        ) {
                             1.0
                         } else {
                             0.0
                         };
 
                         // Indent the rect before rendering icon and content
-                        let indent = 32.0 * state.node_at(item_index).indent as f32;
+                        let indent = 32.0 * state.items_state[item_index].indent as f32;
                         rect.min.x += indent;
 
                         let (mut icon_rect, _) = ui.spacing().icon_rectangles(rect);
@@ -170,7 +274,7 @@ impl TreeView {
                         paint_tree_icon(
                             ui,
                             openness,
-                            state.node_at(item_index).descendants_count > 0,
+                            state.tree[item_index].first_child.is_some(),
                             &icon_response,
                         );
 
@@ -181,7 +285,9 @@ impl TreeView {
                         add_item(
                             &mut child_ui,
                             TreeItem {
-                                index: state.node_at(item_index).index,
+                                // index: state.row_indices[item_index],
+                                item: &state.tree[item_index].value,
+                                item_state: &state.items_ui_data[item_index],
                                 selected: state.selected_index == item_index,
                                 response: &header_response,
                             },

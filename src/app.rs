@@ -1,14 +1,16 @@
-use crate::arena::Arena;
 use crate::arena::memory::GB;
+use crate::arena::scratch::scratch_arena;
+use crate::arena::{self, Arena};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use crate::memory_viewer::MemoryViewer;
-use egui::{CollapsingHeader, ScrollArea, Vec2b};
+use egui::{ComboBox, ScrollArea, Vec2b};
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
@@ -52,30 +54,137 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
             TabContent::RawBinaryViewer { file_index } => {
                 if let Some(data_provider) = &self.file_entries[*file_index].data_provider {
-                    MemoryViewer::show(ui, &data_provider.wasm_data);
+                    MemoryViewer::show(ui, &data_provider.wasm_data.bytes);
                 }
             }
 
-            TabContent::SectionsBinaryViewer { file_index } => {
+            TabContent::SectionsBinaryViewer {
+                file_index,
+                fn_index,
+            } => {
+                if self.file_entries.len() <= *file_index {
+                    return;
+                };
                 if let Some(data_provider) = &self.file_entries[*file_index].data_provider {
                     ScrollArea::both().auto_shrink(Vec2b::FALSE).show(ui, |ui| {
-                        for (idx, section) in data_provider.sections.iter().enumerate() {
-                            let section_name = section.name;
-                            let section_raw_data = &data_provider.wasm_data
-                                [section.offset..(section.offset + section.length)];
+                        let wasm_data = &data_provider.wasm_data;
 
-                            let header_response = CollapsingHeader::new(section_name)
-                                .id_salt(idx)
-                                .show(ui, |ui| {
-                                    MemoryViewer::show(ui, section_raw_data);
-                                })
-                                .header_response;
+                        let scratch = scratch_arena(&[]);
+                        let mut buffer = arena::string::String::new(&scratch, 1024);
 
-                            if header_response.hovered() {
-                                header_response
-                                    .show_tooltip_text(format!("Size: {}", section.length));
+                        _ = buffer.write_fmt(format_args!("Version: {}", wasm_data.version));
+                        ui.label(buffer.as_str());
+
+                        ui.collapsing("Types Section", |ui| {
+                            for ty in wasm_data.types_section.types.iter() {
+                                use std::fmt::Write;
+                                buffer.clear();
+
+                                let params = ty.params();
+                                let results = ty.results();
+
+                                _ = buffer.write_str("fn (");
+
+                                for (idx, param) in params.iter().enumerate() {
+                                    _ = buffer.write_fmt(format_args!("{}", param));
+                                    if !params.is_empty() && idx < params.len() - 1 {
+                                        _ = buffer.write_char(',');
+                                    }
+                                }
+
+                                _ = buffer.write_str(") -> [");
+
+                                for (idx, result) in results.iter().enumerate() {
+                                    _ = buffer.write_fmt(format_args!("{}", result));
+                                    if !params.is_empty() && idx < params.len() - 1 {
+                                        _ = buffer.write_char(',');
+                                    }
+                                }
+
+                                _ = buffer.write_str("]");
+
+                                ui.label(buffer.as_str());
                             }
-                        }
+                        });
+
+                        ui.collapsing("Functions Section", |ui| {
+                            let available_width =
+                                ui.available_width() - ui.spacing().scroll.bar_width;
+
+                            ComboBox::from_label("Selected Function")
+                                .selected_text(
+                                    wasm_data.functions_section.function_names[*fn_index],
+                                )
+                                .show_ui(ui, |ui| {
+                                    ScrollArea::both()
+                                        .min_scrolled_width(f32::min(1000.0, available_width))
+                                        .show_rows(
+                                            ui,
+                                            20.0,
+                                            wasm_data.functions_section.function_count,
+                                            |ui, rows_range| {
+                                                for idx in rows_range {
+                                                    use std::fmt::Write;
+                                                    buffer.clear();
+
+                                                    let func_type_idx = wasm_data
+                                                        .functions_section
+                                                        .function_types[idx];
+                                                    let func_type = &wasm_data.types_section.types
+                                                        [func_type_idx];
+                                                    let func_name = wasm_data
+                                                        .functions_section
+                                                        .function_names[idx];
+
+                                                    let params = func_type.params();
+                                                    let results = func_type.results();
+
+                                                    _ = write!(&mut buffer, "fn {}(", func_name);
+
+                                                    for (idx, param) in params.iter().enumerate() {
+                                                        if !params.is_empty()
+                                                            && idx == params.len() - 1
+                                                        {
+                                                            _ = write!(&mut buffer, "{}", param);
+                                                        } else {
+                                                            _ = write!(&mut buffer, "{}, ", param);
+                                                        }
+                                                    }
+
+                                                    _ = write!(&mut buffer, ") -> [");
+
+                                                    for (idx, result) in results.iter().enumerate()
+                                                    {
+                                                        if !params.is_empty()
+                                                            && idx == results.len() - 1
+                                                        {
+                                                            _ = write!(&mut buffer, "{}", result);
+                                                        } else {
+                                                            _ = write!(&mut buffer, "{}, ", result);
+                                                        }
+                                                    }
+
+                                                    _ = write!(&mut buffer, "]");
+
+                                                    if ui
+                                                        .selectable_label(
+                                                            *fn_index == idx,
+                                                            buffer.as_str(),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        *fn_index = idx
+                                                    }
+                                                }
+                                            },
+                                        )
+                                });
+
+                            MemoryViewer::show(
+                                ui,
+                                wasm_data.functions_section.function_bodies[*fn_index].as_bytes(),
+                            );
+                        });
                     });
                 }
             }
@@ -114,6 +223,7 @@ enum TabContent {
     },
     SectionsBinaryViewer {
         file_index: usize,
+        fn_index: usize,
     },
 }
 
@@ -225,7 +335,10 @@ impl eframe::App for TemplateApp {
                     if ui.button("Sections Binary").clicked() {
                         self.tree.main_surface_mut().push_to_first_leaf(DockTab {
                             title: String::from("Sections Binary"),
-                            contents: TabContent::SectionsBinaryViewer { file_index: 0 },
+                            contents: TabContent::SectionsBinaryViewer {
+                                file_index: 0,
+                                fn_index: 0,
+                            },
                         });
                     }
                 });
@@ -453,17 +566,19 @@ impl TemplateApp {
                 AnalyzerState::AnalyzeWasm { path, .. } => {
                     self.file_entries.clear(); // Not supporting multiple for now.
 
-                    let arena = Arena::new(16 * GB);
-                    let data_provider = Some(DataProviderTwiggy::from_path(
+                    let arena = Arena::new(64 * GB);
+                    let Ok(data_provider) = DataProviderTwiggy::from_path(
                         unsafe { std::mem::transmute(&arena) },
                         &path,
-                    ));
+                    ) else {
+                        return;
+                    };
 
                     self.file_entries.push(FileEntry {
                         path,
                         ty: FileType::Wasm,
                         arena,
-                        data_provider,
+                        data_provider: Some(data_provider),
                     });
 
                     // Reset the tree.
@@ -493,6 +608,7 @@ impl TemplateApp {
                             "Sections Binary",
                             TabContent::SectionsBinaryViewer {
                                 file_index: self.file_entries.len() - 1,
+                                fn_index: 0,
                             },
                         ),
                     ]);
@@ -582,19 +698,22 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
 
                             let mut fe = Vec::with_capacity(files.len());
                             for (path, ty) in files {
-                                let arena = Arena::new(16 * GB);
+                                let arena = Arena::new(64 * GB);
                                 let data_provider = match ty {
-                                    FileType::Wasm => Some(DataProviderTwiggy::from_path(
+                                    FileType::Wasm => DataProviderTwiggy::from_path(
                                         unsafe { std::mem::transmute(&arena) },
                                         &path,
-                                    )),
+                                    ),
+                                };
+                                let Ok(data_provider) = data_provider else {
+                                    continue;
                                 };
 
                                 fe.push(FileEntry {
                                     path,
                                     ty,
                                     arena,
-                                    data_provider,
+                                    data_provider: Some(data_provider),
                                 });
                             }
 

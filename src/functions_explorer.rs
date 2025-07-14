@@ -8,6 +8,7 @@ use crate::{
     data_provider::{Filter, FunctionsView, ViewMode},
     data_provider_twiggy::DataProviderTwiggy,
     gui::tree_view::TreeView,
+    wasm::parser::FunctionGroupType,
 };
 use core::str;
 
@@ -208,17 +209,33 @@ impl FunctionsExplorer {
     }
 
     fn show_dominators(&mut self, ui: &mut egui::Ui, dominator_view: &mut DataProviderTwiggy) {
-        let raw_data = &dominator_view.raw_data;
-        let state = &mut dominator_view.dominator_view_tree_state;
+        let state = &mut dominator_view.dominator_state;
 
-        TreeView.body(ui, state, 20.0, |ui, item| {
-            if item.selected {
-                self.selected_row = Some(item.index);
-            }
+        TreeView.body(ui, state, 20.0, |ui, tree_item| {
+            let function_group = tree_item.item;
+            let item_ui_data = tree_item.item_state;
 
-            let function_properties = &raw_data[item.index].function_property;
-            let name = function_properties.name();
-            let retained_size_percent = function_properties.retained_size_percent;
+            let label = match function_group.ty {
+                FunctionGroupType::Struct => {
+                    format!("struct {}", function_group.name.as_str())
+                }
+                FunctionGroupType::Impl => {
+                    format!(
+                        "impl {} - {}",
+                        function_group.name.as_str(),
+                        item_ui_data.size
+                    )
+                }
+                FunctionGroupType::FunctionInlinedInstance => {
+                    format!("[inlined] {}", function_group.name.as_str())
+                }
+                _ => {
+                    format!("{} - {}", function_group.name.as_str(), item_ui_data.size,)
+                }
+            };
+
+            let retained_size_percent =
+                100.0 * (item_ui_data.size as f32 / dominator_view.total_size as f32);
 
             let available = ui.available_rect_before_wrap();
 
@@ -238,7 +255,7 @@ impl FunctionsExplorer {
             let wrap_width = available.right() - text_pos.x;
 
             // TODO: build galley from scratch?
-            let text: WidgetText = name.into();
+            let text: WidgetText = label.as_str().into();
             let symbol_galley = text.into_galley(
                 ui,
                 Some(TextWrapMode::Extend),
@@ -271,13 +288,13 @@ impl FunctionsExplorer {
                     min: percentage_text_pos,
                     max: percentage_text_pos + percentage_galley.size(),
                 },
-                Id::new(name),
+                Id::new(label),
                 Sense::hover(),
             );
 
             let visuals = ui
                 .style()
-                .interact_selectable(&item.response, item.selected);
+                .interact_selectable(&tree_item.response, tree_item.selected);
 
             // Percentage label
             ui.painter()
@@ -306,24 +323,10 @@ impl FunctionsExplorer {
                 use std::fmt::Write;
                 _ = writeln!(
                     &mut buffer,
-                    "Retained size: {:5.2}(MB)",
-                    function_properties.retained_size_bytes as f32 / (1024.0 * 1024.0)
+                    "Size: {:5.2}(MB)",
+                    item_ui_data.size as f32 / (1024.0 * 1024.0)
                 );
-                _ = writeln!(
-                    &mut buffer,
-                    "Self size: {:9.2}(MB)",
-                    function_properties.shallow_size_bytes as f32 / (1024.0 * 1024.0)
-                );
-                _ = writeln!(
-                    &mut buffer,
-                    "Retained: {:10.2} (%)",
-                    function_properties.retained_size_percent
-                );
-                _ = write!(
-                    &mut buffer,
-                    "Self: {:14.2} (%)",
-                    function_properties.shallow_size_percent
-                );
+
                 percentage_response.show_tooltip_ui(|ui| {
                     ui.monospace(std::str::from_utf8(&buffer).unwrap());
                 });
