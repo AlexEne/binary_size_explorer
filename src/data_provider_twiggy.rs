@@ -4,8 +4,9 @@ use crate::{
         CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
     },
+    dwarf::{DwNode, DwNodeType},
     gui::tree_view::{TreeItemStateFlags, TreeState},
-    wasm::parser::{FunctionGroup, FunctionGroupType, WasmData},
+    wasm::parser::WasmData,
 };
 use addr2line::{
     LookupResult,
@@ -40,7 +41,7 @@ pub struct DataProviderTwiggy<'a> {
     pub total_percent: f32,
 
     pub top_view_items_filtered: Vec<usize, &'a Arena>,
-    pub dominator_state: TreeState<'a, FunctionGroup<'a>, FunctionItemState>,
+    pub dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState>,
 
     /// The array of code locations loaded from the file.
     code_locations: Array<'a, CodeLocation<'a>>,
@@ -77,7 +78,7 @@ impl<'a> DataProviderTwiggy<'a> {
             wasm_data
         };
 
-        let (wasm_data, function_groups) = WasmData::from_bytes(arena, file_bytes);
+        let (wasm_data, dw_node_tree) = WasmData::from_bytes(arena, file_bytes);
 
         let mut item_count = 0;
         let mut total_size = 0;
@@ -188,13 +189,12 @@ impl<'a> DataProviderTwiggy<'a> {
         }
 
         let top_view_items_filtered = Vec::with_capacity_in(raw_data.len(), arena);
-        let dominator_state: TreeState<'a, FunctionGroup<'a>, FunctionItemState> =
-            TreeState::from_tree(
-                arena,
-                function_groups,
-                |item, _| FunctionItemState { size: item.size },
-                |(_, a), (_, b)| b.size.cmp(&a.size),
-            );
+        let dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState> = TreeState::from_tree(
+            arena,
+            dw_node_tree,
+            |item, _| FunctionItemState { size: item.size },
+            |(_, a), (_, b)| b.size.cmp(&a.size),
+        );
 
         let mut provider = DataProviderTwiggy {
             wasm_data: wasm_data,
@@ -313,7 +313,7 @@ impl DataProviderTwiggy<'_> {
 
         // Update dominators
         {
-            fill_tree_view_state(&mut self.dominator_state, &filter);
+            fill_tree_view_state(&self.wasm_data, &mut self.dominator_state, &filter);
 
             if !self.dominator_state.row_indices.is_empty() {
                 self.total_size = self.dominator_state.items_ui_data[0].size;
@@ -325,7 +325,8 @@ impl DataProviderTwiggy<'_> {
 }
 
 fn fill_tree_view_state<'a>(
-    state: &mut TreeState<'a, FunctionGroup<'a>, FunctionItemState>,
+    wams_data: &WasmData<'a>,
+    state: &mut TreeState<'a, DwNode<'a>, FunctionItemState>,
     filter: &Filter,
 ) {
     let start = Instant::now();
@@ -343,7 +344,12 @@ fn fill_tree_view_state<'a>(
         }
         Filter::NameFilter { name } => {
             for idx in 0..state.items_state.len() {
-                let visible = state.tree[idx].value.demangled_name.contains(name);
+                let fn_index = state.tree[idx].value.fn_index;
+                let visible = if fn_index != u32::MAX {
+                    wams_data.functions_section.function_names[fn_index as usize].contains(name)
+                } else {
+                    state.tree[idx].value.name.as_str().contains(name)
+                };
 
                 state.items_state[idx]
                     .flags
@@ -380,13 +386,13 @@ fn fill_tree_view_state<'a>(
 
         let item_ui_data = &mut state.items_ui_data[idx];
 
-        let function_group = &state.tree[idx].value;
+        let dw_node = &state.tree[idx].value;
 
         if matches!(
-            function_group.ty,
-            FunctionGroupType::FunctionInstance | FunctionGroupType::FunctionInlinedInstance
+            dw_node.ty,
+            DwNodeType::FunctionInstance | DwNodeType::FunctionInlinedInstance
         ) {
-            item_ui_data.size = function_group.size;
+            item_ui_data.size = dw_node.size;
         }
 
         if let Some(parent_idx) = state.tree[idx].parent {

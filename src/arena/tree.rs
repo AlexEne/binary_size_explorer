@@ -6,7 +6,6 @@ pub struct TreeNode<T> {
     pub value: T,
     pub parent: Option<usize>,
     pub first_child: Option<usize>,
-    pub last_child: Option<usize>,
     pub next_sibiling: Option<usize>,
 }
 
@@ -22,7 +21,6 @@ impl<'a, T> Tree<'a, T> {
                 value: root,
                 parent: None,
                 first_child: None,
-                last_child: None,
                 next_sibiling: None,
             });
         }
@@ -35,19 +33,19 @@ impl<'a, T> Tree<'a, T> {
             value,
             parent: Some(parent_index),
             first_child: None,
-            last_child: None,
             next_sibiling: None,
         };
 
         let new_node_index = self.nodes.len();
+        assert!(parent_index != new_node_index);
         self.nodes.push(new_node);
 
-        if let Some(last_child_index) = self.nodes[parent_index].last_child {
-            self.nodes[last_child_index].next_sibiling = Some(new_node_index);
-            self.nodes[parent_index].last_child = Some(new_node_index);
+        if let Some(last_child_index) = self.nodes[parent_index].first_child {
+            assert!(last_child_index != new_node_index);
+            self.nodes[new_node_index].next_sibiling = Some(last_child_index);
+            self.nodes[parent_index].first_child = Some(new_node_index);
         } else {
             self.nodes[parent_index].first_child = Some(new_node_index);
-            self.nodes[parent_index].last_child = Some(new_node_index);
         }
     }
 
@@ -64,8 +62,7 @@ impl<'a, T> Tree<'a, T> {
 
             while let Some(cur_index) = cur_child_index {
                 if self.nodes[cur_index].next_sibiling == Some(node_index) {
-                    self.nodes[cur_index].next_sibiling = None;
-                    self.nodes[parent_index].last_child = Some(cur_index);
+                    self.nodes[cur_index].next_sibiling = self.nodes[node_index].next_sibiling;
                     break;
                 }
                 cur_child_index = self.nodes[cur_index].next_sibiling;

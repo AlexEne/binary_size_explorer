@@ -7,8 +7,8 @@ use crate::{
     arena::{array::Array, scratch::scratch_arena},
     data_provider::{Filter, FunctionsView, ViewMode},
     data_provider_twiggy::DataProviderTwiggy,
+    dwarf::DwNodeType,
     gui::tree_view::TreeView,
-    wasm::parser::FunctionGroupType,
 };
 use core::str;
 
@@ -212,25 +212,21 @@ impl FunctionsExplorer {
         let state = &mut dominator_view.dominator_state;
 
         TreeView.body(ui, state, 20.0, |ui, tree_item| {
-            let function_group = tree_item.item;
+            let dw_node = tree_item.item;
             let item_ui_data = tree_item.item_state;
 
-            let label = match function_group.ty {
-                FunctionGroupType::Struct => {
-                    format!("struct {}", function_group.name.as_str())
+            let label = match dw_node.ty {
+                DwNodeType::Struct => {
+                    format!("struct {}", dw_node.name.as_str())
                 }
-                FunctionGroupType::Impl => {
-                    format!(
-                        "impl {} - {}",
-                        function_group.name.as_str(),
-                        item_ui_data.size
-                    )
+                DwNodeType::Impl => {
+                    format!("impl {} - {}", dw_node.name.as_str(), item_ui_data.size)
                 }
-                FunctionGroupType::FunctionInlinedInstance => {
-                    format!("[inlined] {}", function_group.name.as_str())
+                DwNodeType::FunctionInlinedInstance => {
+                    format!("[inlined] {}", dw_node.name.as_str())
                 }
                 _ => {
-                    format!("{} - {}", function_group.name.as_str(), item_ui_data.size,)
+                    format!("{} - {}", dw_node.name.as_str(), item_ui_data.size,)
                 }
             };
 

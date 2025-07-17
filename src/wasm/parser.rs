@@ -1,9 +1,4 @@
-use std::{
-    hash::{DefaultHasher, Hash, Hasher},
-    ops::Range,
-    time::Instant,
-    u32,
-};
+use std::{ops::Range, time::Instant, u32};
 
 use gimli::{
     AttributeValue, DW_AT_high_pc, DW_AT_inline, DW_AT_linkage_name, DW_AT_low_pc, DW_AT_name,
@@ -13,7 +8,10 @@ use gimli::{
 use hashbrown::{DefaultHashBuilder, HashMap};
 use wasmparser::{Encoding, FuncType, FunctionBody};
 
-use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree};
+use crate::{
+    arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree},
+    dwarf::{DwNode, DwNodeType, SymbolName},
+};
 
 pub struct WasmData<'a> {
     pub bytes: &'a [u8],
@@ -28,39 +26,9 @@ pub struct WasmData<'a> {
     pub functions_section: FunctionSection<'a>,
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub struct SymbolName<'a> {
-    hash: u64,
-    name: &'a str,
-}
-
-impl<'a> SymbolName<'a> {
-    pub fn root() -> Self {
-        const NAME: &'static str = "<root>";
-        let mut hasher = DefaultHasher::new();
-        NAME.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        Self { hash, name: NAME }
-    }
-
-    pub fn new_with_parent(parent: SymbolName<'a>, name: &'a str) -> Self {
-        let mut hasher = DefaultHasher::new();
-        parent.hash.hash(&mut hasher);
-        name.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        Self { hash, name }
-    }
-
-    pub fn as_str(&self) -> &'a str {
-        self.name
-    }
-}
-
 impl<'a> WasmData<'a> {
     #[profiling::function]
-    pub fn from_bytes(arena: &'a Arena, bytes: &'a [u8]) -> (Self, Tree<'a, FunctionGroup<'a>>) {
+    pub fn from_bytes(arena: &'a Arena, bytes: &'a [u8]) -> (Self, Tree<'a, DwNode<'a>>) {
         let mut version = 0;
         let mut types_section = TypeSection {
             types: Array::new(arena, 0),
@@ -78,26 +46,25 @@ impl<'a> WasmData<'a> {
         };
 
         let scratch = scratch_arena(&[arena]);
-        let mut function_group_name_lookup =
+        let mut dw_node_name_lookup =
             HashMap::<SymbolName<'a>, usize, DefaultHashBuilder, &Arena>::with_capacity_in(
                 0, &scratch,
             );
         let mut function_index_lookup =
             HashMap::<&str, u32, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
         let mut offset_index_lookup = HashMap::<DebugInfoOffset<usize>, usize>::new();
-        let mut function_groups = Tree::new(
+        let mut dw_node_tree = Tree::new(
             arena,
             0,
-            FunctionGroup {
-                ty: FunctionGroupType::Namespace,
+            DwNode {
+                ty: DwNodeType::Namespace,
                 name: SymbolName::root(),
-                demangled_name: "",
                 size: 0,
                 fn_index: u32::MAX,
             },
         );
 
-        let mut debug_sections = HashMap::new();
+        let mut debug_sections: Vec<_, &Arena> = Vec::with_capacity_in(128, &scratch);
 
         for section in wasmparser::Parser::new(0).parse_all(bytes) {
             let payload = match section {
@@ -180,21 +147,18 @@ impl<'a> WasmData<'a> {
                     }
 
                     // TODO: (bruno) something better than 5 * count!
-                    // function_groups = Array::new(arena, 10000 * count as usize);
-                    function_groups = Tree::new(
+                    dw_node_tree = Tree::new(
                         arena,
                         10000 * count as usize,
-                        FunctionGroup {
-                            ty: FunctionGroupType::Namespace,
+                        DwNode {
+                            ty: DwNodeType::Namespace,
                             name: SymbolName::root(),
-                            demangled_name: "",
                             size: 0,
                             fn_index: u32::MAX,
                         },
                     );
 
-                    function_group_name_lookup =
-                        HashMap::with_capacity_in(5 * count as usize, &scratch);
+                    dw_node_name_lookup = HashMap::with_capacity_in(5 * count as usize, &scratch);
 
                     functions_section.function_count = count as usize;
                 }
@@ -243,8 +207,7 @@ impl<'a> WasmData<'a> {
                         }
                         wasmparser::KnownCustom::Unknown => {
                             if custom_section_reader.name().starts_with(".debug") {
-                                debug_sections
-                                    .insert(custom_section_reader.name(), custom_section_reader);
+                                debug_sections.push(custom_section_reader);
                             }
                         }
                         _ => {}
@@ -296,16 +259,23 @@ impl<'a> WasmData<'a> {
             let start = Instant::now();
             let dwarf = gimli::Dwarf::load::<_, ()>(|section_id| {
                 let section = debug_sections
-                    .get(section_id.name())
+                    .iter()
+                    .find(|section| section.name() == section_id.name())
                     .map_or::<&[u8], _>(&[], |section| section.data());
 
                 Ok(EndianSlice::new(section, LittleEndian))
             })
             .expect("Failed to load the DWARF info");
 
-            let root_symbol_name = function_groups.root().name;
+            let root_symbol_name = dw_node_tree.root().name;
 
-            let mut group_index_stack = Array::new(&scratch, 128);
+            let mut dw_node_stack = Array::new(&scratch, 128);
+
+            // let mut namespaces = 0;
+            // let mut structs = 0;
+            // let mut functions = 0;
+            // let mut function_instances = 0;
+            // let mut function_inlined_instances = 0;
 
             let mut units = dwarf.units();
             while let Ok(Some(unit_header)) = units.next() {
@@ -317,11 +287,8 @@ impl<'a> WasmData<'a> {
                 let unit = dwarf.unit(unit_header).unwrap();
                 let unit_ref = unit.unit_ref(&dwarf);
 
-                group_index_stack.clear();
-                group_index_stack.push((0, root_symbol_name));
-
-                let mut prev_parent_group_index = 0;
-                let mut prev_parent_group_name = root_symbol_name;
+                dw_node_stack.clear();
+                dw_node_stack.push((1, 0, root_symbol_name));
 
                 let mut entries = unit_ref.entries_raw(None).unwrap();
                 let mut baseline_depth = 0;
@@ -336,21 +303,53 @@ impl<'a> WasmData<'a> {
                     baseline_depth = depth;
                     assert!(depth_diff <= 1, "Unexpected offset: {}>1", depth_diff);
 
-                    // If offset is negative, it means that we are climbing back the tree
-                    while depth_diff < 0 {
-                        group_index_stack.pop();
+                    // If we are climbing up the DEI tree or going to the next sibling,
+                    // we need to potentially pop entries from the stack.
+                    if depth_diff <= 0 {
+                        while let Some((count, idx, _)) = dw_node_stack.last_mut() {
+                            // If we are climbing down not enouth to pop a node from stack
+                            // then we just adjust the depth and break from this loop
+                            if *count > -depth_diff {
+                                *count += depth_diff;
+                                break;
+                            } else {
+                                depth_diff += *count;
+                                *count = 0;
+                            }
 
-                        depth_diff += 1;
+                            // Remove if necessary
+                            let idx = *idx;
+                            if idx == dw_node_tree.len() - 1
+                                && matches!(
+                                    dw_node_tree[idx].value.ty,
+                                    DwNodeType::Namespace | DwNodeType::Struct
+                                )
+                                && dw_node_tree[idx].first_child.is_none()
+                            {
+                                dw_node_name_lookup.remove(&dw_node_tree[idx].value.name);
+                                if idx == 1485 {
+                                    println!("Break");
+                                }
+                                dw_node_tree.pop();
+                            }
+
+                            dw_node_stack.pop();
+                        }
                     }
 
-                    // If offset is 1, we are processing a nested entry, so we should update
+                    // If offset is 1, we are processing a child entry, so we should update
                     // parent index with the previous function group index
                     if depth_diff == 1 {
-                        group_index_stack.push((prev_parent_group_index, prev_parent_group_name));
+                        dw_node_stack
+                            .last_mut()
+                            .expect("Failed to get entry from the stack. This is likely a bug")
+                            .0 += 1;
                     }
 
-                    let (parent_group_index, parent_group_name) =
-                        group_index_stack.last().copied().unwrap();
+                    let (_, parent_dw_node_idx, parent_symbol_name) = dw_node_stack
+                        .last()
+                        .copied()
+                        .expect("Failed to get entry from the stack. This is likely a bug");
 
                     let Some(abbreviation) = abbreviation else {
                         continue;
@@ -376,46 +375,44 @@ impl<'a> WasmData<'a> {
                                 }
                             }
 
-                            let new_group_name =
-                                SymbolName::new_with_parent(parent_group_name, name_str);
+                            let new_symbol_name =
+                                SymbolName::new_with_parent(parent_symbol_name, name_str);
 
-                            prev_parent_group_index = match function_group_name_lookup
-                                .get(&new_group_name)
+                            let dw_node_idx = match dw_node_name_lookup
+                                .get(&new_symbol_name)
                                 .copied()
                             {
-                                Some(group_idx) => group_idx,
+                                Some(dw_node_idx) => dw_node_idx,
                                 None => {
                                     let ty = match abbreviation.tag() {
-                                        DW_TAG_structure_type => FunctionGroupType::Struct,
+                                        DW_TAG_structure_type => DwNodeType::Struct,
                                         DW_TAG_namespace if name_str.starts_with("{impl#") => {
-                                            FunctionGroupType::Impl
+                                            DwNodeType::Impl
                                         }
-                                        _ => FunctionGroupType::Namespace,
+                                        _ => DwNodeType::Namespace,
                                     };
 
-                                    function_groups.add_child(
-                                        parent_group_index,
-                                        FunctionGroup {
+                                    dw_node_tree.add_child(
+                                        parent_dw_node_idx,
+                                        DwNode {
                                             ty,
-                                            name: new_group_name,
-                                            demangled_name: "",
+                                            name: new_symbol_name,
                                             size: 0,
                                             fn_index: u32::MAX,
                                         },
                                     );
-                                    let new_function_group_index = function_groups.len() - 1;
+                                    let new_dw_node_idx = dw_node_tree.len() - 1;
 
                                     let offset = offset.to_debug_info_offset(&unit_header).unwrap();
 
-                                    offset_index_lookup.insert(offset, new_function_group_index);
-                                    function_group_name_lookup
-                                        .insert(new_group_name, new_function_group_index);
+                                    offset_index_lookup.insert(offset, new_dw_node_idx);
+                                    dw_node_name_lookup.insert(new_symbol_name, new_dw_node_idx);
 
-                                    new_function_group_index
+                                    new_dw_node_idx
                                 }
                             };
 
-                            prev_parent_group_name = new_group_name;
+                            dw_node_stack.push((0, dw_node_idx, new_symbol_name));
                         }
                         DW_TAG_structure_type if depth > 1 => {
                             let mut name_str = "";
@@ -434,38 +431,36 @@ impl<'a> WasmData<'a> {
                                 }
                             }
 
-                            let new_group_name =
-                                SymbolName::new_with_parent(parent_group_name, name_str);
+                            let new_symbol_name =
+                                SymbolName::new_with_parent(parent_symbol_name, name_str);
 
-                            prev_parent_group_index = match function_group_name_lookup
-                                .get(&new_group_name)
+                            let dw_node_idx = match dw_node_name_lookup
+                                .get(&new_symbol_name)
                                 .copied()
                             {
-                                Some(group_idx) => group_idx,
+                                Some(dw_node_idx) => dw_node_idx,
                                 None => {
-                                    function_groups.add_child(
-                                        parent_group_index,
-                                        FunctionGroup {
-                                            ty: FunctionGroupType::Struct,
-                                            name: new_group_name,
-                                            demangled_name: "",
+                                    dw_node_tree.add_child(
+                                        parent_dw_node_idx,
+                                        DwNode {
+                                            ty: DwNodeType::Struct,
+                                            name: new_symbol_name,
                                             size: 0,
                                             fn_index: u32::MAX,
                                         },
                                     );
-                                    let new_function_group_index = function_groups.len() - 1;
+                                    let new_dw_node_idx = dw_node_tree.len() - 1;
 
                                     let offset = offset.to_debug_info_offset(&unit_header).unwrap();
 
-                                    offset_index_lookup.insert(offset, new_function_group_index);
-                                    function_group_name_lookup
-                                        .insert(new_group_name, new_function_group_index);
+                                    offset_index_lookup.insert(offset, new_dw_node_idx);
+                                    dw_node_name_lookup.insert(new_symbol_name, new_dw_node_idx);
 
-                                    new_function_group_index
+                                    new_dw_node_idx
                                 }
                             };
 
-                            prev_parent_group_name = new_group_name;
+                            dw_node_stack.push((0, dw_node_idx, new_symbol_name));
                         }
                         DW_TAG_subprogram => {
                             let mut linkage_name = "";
@@ -475,11 +470,9 @@ impl<'a> WasmData<'a> {
                             let mut low_pc = 0;
                             let mut high_pc = 0;
 
-                            // let mut attributes = entry.attrs();
                             for attr_spec in abbreviation.attributes() {
                                 let attr = entries.read_attribute(*attr_spec).unwrap();
 
-                                // while let Ok(Some(attr)) = attributes.next() {
                                 #[allow(non_upper_case_globals)]
                                 #[allow(non_snake_case)]
                                 match attr.name() {
@@ -509,7 +502,6 @@ impl<'a> WasmData<'a> {
                                         }
                                     }
                                     DW_AT_inline => {
-                                        // println!("Inline: {:?}", attr);
                                         let attr_value = attr.u8_value().expect(
                                             "Failed to parse subprogram 'inline' attribute value",
                                         );
@@ -545,8 +537,8 @@ impl<'a> WasmData<'a> {
                                 }
                             }
 
-                            let subprogram_symbol_name =
-                                SymbolName::new_with_parent(parent_group_name, name);
+                            let function_symbol_name =
+                                SymbolName::new_with_parent(parent_symbol_name, name);
 
                             // When the name is empty, it's usually an inline DEI of a previously
                             // declared function. In those cases, we can get the original function
@@ -563,78 +555,54 @@ impl<'a> WasmData<'a> {
                                         ));
 
                                     debug_assert!(matches!(
-                                        function_groups.get(index).ty,
-                                        FunctionGroupType::FunctionInstance
-                                            | FunctionGroupType::FunctionInlinedInstance
+                                        dw_node_tree.get(index).ty,
+                                        DwNodeType::FunctionInstance
+                                            | DwNodeType::FunctionInlinedInstance
                                     ));
-                                    function_groups.get_mut(index).ty =
-                                        FunctionGroupType::FunctionInlinedInstance;
+
+                                    dw_node_tree.get_mut(index).ty =
+                                        DwNodeType::FunctionInlinedInstance;
                                 }
                             } else {
-                                let parent_group = *function_groups.get(parent_group_index);
-                                let subprogram_group_index = if let Some(subprogram_index) =
-                                    function_group_name_lookup.get(&subprogram_symbol_name)
+                                let parent_dw_node = *dw_node_tree.get(parent_dw_node_idx);
+                                let function_dw_node_idx = match dw_node_name_lookup
+                                    .get(&function_symbol_name)
                                 {
-                                    *subprogram_index
-                                } else {
-                                    function_groups.add_child(
-                                        parent_group_index,
-                                        FunctionGroup {
-                                            ty: FunctionGroupType::Function,
-                                            name: subprogram_symbol_name,
-                                            demangled_name: "",
-                                            size: 0,
-                                            fn_index: u32::MAX,
-                                        },
-                                    );
-                                    let new_function_group_index = function_groups.len() - 1;
+                                    Some(dw_node_idx) => *dw_node_idx,
+                                    None => {
+                                        let demangled_name = demangled_name(&arena, linkage_name);
+                                        if matches!(parent_dw_node.ty, DwNodeType::Impl) {
+                                            if let Some((type_name, trait_name)) =
+                                                extract_trait_from_demangled_name(demangled_name)
+                                            {
+                                                let mut trait_impl_name = String::new(
+                                                    arena,
+                                                    type_name.len()
+                                                        + trait_name.len()
+                                                        + " for ".len(),
+                                                );
 
-                                    function_group_name_lookup
-                                        .insert(subprogram_symbol_name, new_function_group_index);
+                                                trait_impl_name.push_str(trait_name);
+                                                trait_impl_name.push_str(" for ");
+                                                trait_impl_name.push_str(type_name);
+                                                dw_node_tree.get_mut(parent_dw_node_idx).name =
+                                                    SymbolName::new_with_parent(
+                                                        parent_symbol_name,
+                                                        trait_impl_name.to_str(),
+                                                    );
+                                            } else {
+                                                let mut trait_impl_name =
+                                                    String::new(arena, demangled_name.len());
 
-                                    new_function_group_index
-                                };
+                                                trait_impl_name.push_str(demangled_name);
+                                                dw_node_tree.get_mut(parent_dw_node_idx).name =
+                                                    SymbolName::new_with_parent(
+                                                        parent_symbol_name,
+                                                        trait_impl_name.to_str(),
+                                                    );
+                                            }
+                                        }
 
-                                let demangled_name = demangled_name(&arena, linkage_name);
-                                if matches!(parent_group.ty, FunctionGroupType::Impl) {
-                                    if let Some((type_name, trait_name)) =
-                                        extract_trait_from_demangled_name(demangled_name)
-                                    {
-                                        let mut trait_impl_name = String::new(
-                                            arena,
-                                            type_name.len() + trait_name.len() + " for ".len(),
-                                        );
-
-                                        trait_impl_name.push_str(trait_name);
-                                        trait_impl_name.push_str(" for ");
-                                        trait_impl_name.push_str(type_name);
-                                        function_groups.get_mut(parent_group_index).name =
-                                            SymbolName::new_with_parent(
-                                                parent_group_name,
-                                                trait_impl_name.to_str(),
-                                            );
-                                    } else {
-                                        let mut trait_impl_name =
-                                            String::new(arena, demangled_name.len());
-
-                                        trait_impl_name.push_str(demangled_name);
-                                        function_groups.get_mut(parent_group_index).name =
-                                            SymbolName::new_with_parent(
-                                                parent_group_name,
-                                                trait_impl_name.to_str(),
-                                            );
-                                    }
-                                }
-
-                                let instance_name =
-                                    SymbolName::new_with_parent(subprogram_symbol_name, name);
-
-                                let new_function_group_index =
-                                    if let Some(new_function_group_index) =
-                                        function_group_name_lookup.get(&instance_name)
-                                    {
-                                        *new_function_group_index
-                                    } else {
                                         let fn_index =
                                             function_index_lookup.get(linkage_name).copied();
 
@@ -645,30 +613,31 @@ impl<'a> WasmData<'a> {
                                                 [fn_index as usize] = linkage_name;
                                         }
 
-                                        function_groups.add_child(
-                                            subprogram_group_index,
-                                            FunctionGroup {
+                                        dw_node_tree.add_child(
+                                            parent_dw_node_idx,
+                                            DwNode {
                                                 ty: if !inlined {
-                                                    FunctionGroupType::FunctionInstance
+                                                    DwNodeType::FunctionInstance
                                                 } else {
-                                                    FunctionGroupType::FunctionInlinedInstance
+                                                    DwNodeType::FunctionInlinedInstance
                                                 },
-                                                name: subprogram_symbol_name,
-                                                demangled_name: demangled_name,
+                                                name: function_symbol_name,
                                                 size: high_pc as u32,
                                                 fn_index: fn_index.unwrap_or(u32::MAX),
                                             },
                                         );
-                                        let new_function_group_index = function_groups.len() - 1;
 
-                                        function_group_name_lookup
-                                            .insert(instance_name, new_function_group_index);
+                                        let new_dw_node_idx = dw_node_tree.len() - 1;
 
-                                        new_function_group_index
-                                    };
+                                        dw_node_name_lookup
+                                            .insert(function_symbol_name, new_dw_node_idx);
+
+                                        new_dw_node_idx
+                                    }
+                                };
 
                                 let offset = offset.to_debug_info_offset(&unit_header).unwrap();
-                                offset_index_lookup.insert(offset, new_function_group_index);
+                                offset_index_lookup.insert(offset, function_dw_node_idx);
                             }
                         }
                         _ => {
@@ -680,18 +649,22 @@ impl<'a> WasmData<'a> {
                 }
             }
 
-            for idx in (0..function_groups.len()).rev() {
-                let size = function_groups.get(idx).size;
-                if let Some(parent_idx) = function_groups.get_parent_index(idx) {
-                    function_groups.get_mut(parent_idx).size += size;
+            for idx in (0..dw_node_tree.len()).rev() {
+                let size = dw_node_tree.get(idx).size;
+                if let Some(parent_idx) = dw_node_tree.get_parent_index(idx) {
+                    dw_node_tree.get_mut(parent_idx).size += size;
                 }
             }
 
             println!("Dwarf parsing: {}s", (Instant::now() - start).as_secs_f32());
+            // println!(
+            //     "Namespace {} | Structs {} | Functions {} | Function Instances {} | Function Inlined Instances {}",
+            //     namespaces, structs, functions, function_instances, function_inlined_instances
+            // );
         }
 
         drop(function_index_lookup);
-        drop(function_group_name_lookup);
+        drop(dw_node_name_lookup);
 
         (
             Self {
@@ -700,7 +673,7 @@ impl<'a> WasmData<'a> {
                 types_section,
                 functions_section,
             },
-            function_groups,
+            dw_node_tree,
         )
     }
 }
@@ -720,25 +693,6 @@ pub struct FunctionSection<'a> {
     pub function_count: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FunctionGroupType {
-    Namespace,
-    Struct,
-    Impl,
-    Function,
-    FunctionInstance,
-    FunctionInlinedInstance,
-}
-
-#[derive(Clone, Copy)]
-pub struct FunctionGroup<'a> {
-    pub ty: FunctionGroupType,
-    pub name: SymbolName<'a>,
-    pub demangled_name: &'a str,
-    pub size: u32,
-    pub fn_index: u32,
-}
-
 fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {
     use std::fmt::Write;
     let demangled_symbol = rustc_demangle::demangle(name);
@@ -755,7 +709,6 @@ fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {
 fn parse_type_as_trait<'a>(demangled_name: &'a str) -> Option<(&'a str, &'a str)> {
     if demangled_name.is_empty() {
         return None;
-        // panic!("Failed to parse type as trait: name is empty");
     }
 
     let bytes_len = demangled_name.as_bytes().len();
