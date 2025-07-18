@@ -4,7 +4,7 @@ use crate::{
         CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
     },
-    dwarf::{DwNode, DwNodeType},
+    dwarf::{DwData, DwNode, DwNodeType},
     gui::tree_view::{TreeItemStateFlags, TreeState},
     wasm::parser::WasmData,
 };
@@ -78,7 +78,8 @@ impl<'a> DataProviderTwiggy<'a> {
             wasm_data
         };
 
-        let (wasm_data, dw_node_tree) = WasmData::from_bytes(arena, file_bytes);
+        let wasm_data = WasmData::from_bytes(arena, file_bytes);
+        let dw_data = DwData::from_raw_sections(arena, &wasm_data.debug_sections);
 
         let mut item_count = 0;
         let mut total_size = 0;
@@ -191,7 +192,7 @@ impl<'a> DataProviderTwiggy<'a> {
         let top_view_items_filtered = Vec::with_capacity_in(raw_data.len(), arena);
         let dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState> = TreeState::from_tree(
             arena,
-            dw_node_tree,
+            dw_data.nodes,
             |item, _| FunctionItemState { size: item.size },
             |(_, a), (_, b)| b.size.cmp(&a.size),
         );
@@ -344,7 +345,8 @@ fn fill_tree_view_state<'a>(
         }
         Filter::NameFilter { name } => {
             for idx in 0..state.items_state.len() {
-                let fn_index = state.tree[idx].value.fn_index;
+                // let fn_index = state.tree[idx].value.fn_index;
+                let fn_index = u32::MAX;
                 let visible = if fn_index != u32::MAX {
                     wams_data.functions_section.function_names[fn_index as usize].contains(name)
                 } else {

@@ -1,6 +1,6 @@
 use std::ops::Index;
 
-use crate::arena::{Arena, array::Array};
+use crate::arena::Arena;
 
 pub struct TreeNode<T> {
     pub value: T,
@@ -10,12 +10,12 @@ pub struct TreeNode<T> {
 }
 
 pub struct Tree<'a, T> {
-    nodes: Array<'a, TreeNode<T>>,
+    nodes: Vec<TreeNode<T>, &'a Arena>,
 }
 
 impl<'a, T> Tree<'a, T> {
     pub fn new(arena: &'a Arena, capacity: usize, root: T) -> Self {
-        let mut nodes = Array::new(arena, capacity);
+        let mut nodes = Vec::with_capacity_in(capacity, arena);
         if capacity != 0 {
             nodes.push(TreeNode {
                 value: root,
@@ -72,6 +72,10 @@ impl<'a, T> Tree<'a, T> {
         self.nodes.pop();
     }
 
+    pub fn shrink_to_fit(&mut self) {
+        self.nodes.shrink_to_fit();
+    }
+
     #[inline(always)]
     pub fn root(&self) -> &T {
         &self.nodes[0].value
@@ -125,7 +129,7 @@ impl<'a, T> Index<usize> for Tree<'a, T> {
 }
 
 pub struct ChildrenIter<'a, T> {
-    nodes: &'a Array<'a, TreeNode<T>>,
+    nodes: &'a Vec<TreeNode<T>, &'a Arena>,
     current_index: Option<usize>,
 }
 

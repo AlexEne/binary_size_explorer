@@ -310,7 +310,6 @@ unsafe impl Allocator for Arena {
             unsafe {
                 self.offset
                     .set(self.offset.get().unchecked_sub(layout.size()));
-                // _ = self.buffer.sub(layout.size());
             };
         }
     }
@@ -338,8 +337,26 @@ unsafe impl Allocator for Arena {
 
         // Handle the case where we are growing the last allocation.
         if unsafe { ptr.add(old_layout.size()) == self.buffer.add(self.offset.get()) } {
-            self.offset
-                .set(self.offset.get() + (new_layout.size() - old_layout.size()));
+            let end = self.offset.get() + new_layout.size() - old_layout.size();
+
+            if end > self.commited.get() {
+                let new_commited =
+                    (end + ALLOCATION_CHUNCK_SIZE - 1) & !(ALLOCATION_CHUNCK_SIZE - 1);
+
+                if new_commited > self.capacity {
+                    panic!("Failed to allocate from Arena: not enough capacity");
+                }
+
+                unsafe {
+                    memory::virtual_commit(
+                        self.buffer.add(self.commited.get()),
+                        new_commited - self.commited.get(),
+                    );
+                }
+                self.commited.set(new_commited);
+            }
+
+            self.offset.set(end);
             return Ok(NonNull::slice_from_raw_parts(ptr, new_layout.size()));
         } else {
             // In debug, we want to let the developers know that their
@@ -378,8 +395,26 @@ unsafe impl Allocator for Arena {
 
         // Handle the case where we are growing the last allocation.
         if unsafe { ptr.add(old_layout.size()) == self.buffer.add(self.offset.get()) } {
-            self.offset
-                .set(self.offset.get() + (new_layout.size() - old_layout.size()));
+            let end = self.offset.get() + new_layout.size() - old_layout.size();
+
+            if end > self.commited.get() {
+                let new_commited =
+                    (end + ALLOCATION_CHUNCK_SIZE - 1) & !(ALLOCATION_CHUNCK_SIZE - 1);
+
+                if new_commited > self.capacity {
+                    panic!("Failed to allocate from Arena: not enough capacity");
+                }
+
+                unsafe {
+                    memory::virtual_commit(
+                        self.buffer.add(self.commited.get()),
+                        new_commited - self.commited.get(),
+                    );
+                }
+                self.commited.set(new_commited);
+            }
+
+            self.offset.set(end);
 
             unsafe {
                 ptr.add(old_layout.size())

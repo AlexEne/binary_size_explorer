@@ -1,17 +1,7 @@
-use std::{ops::Range, time::Instant, u32};
-
-use gimli::{
-    AttributeValue, DW_AT_high_pc, DW_AT_inline, DW_AT_linkage_name, DW_AT_low_pc, DW_AT_name,
-    DW_AT_specification, DW_INL_inlined, DW_TAG_namespace, DW_TAG_structure_type,
-    DW_TAG_subprogram, DebugInfoOffset, EndianSlice, LittleEndian, UnitType,
-};
-use hashbrown::{DefaultHashBuilder, HashMap};
+use std::ops::Range;
 use wasmparser::{Encoding, FuncType, FunctionBody};
 
-use crate::{
-    arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree},
-    dwarf::{DwNode, DwNodeType, SymbolName},
-};
+use crate::arena::{Arena, array::Array, string::String};
 
 pub struct WasmData<'a> {
     pub bytes: &'a [u8],
@@ -24,11 +14,14 @@ pub struct WasmData<'a> {
 
     /// Functions section
     pub functions_section: FunctionSection<'a>,
+
+    /// All the `debug_*` sections in the bundle.
+    pub debug_sections: Vec<(&'a str, &'a [u8]), &'a Arena>,
 }
 
 impl<'a> WasmData<'a> {
     #[profiling::function]
-    pub fn from_bytes(arena: &'a Arena, bytes: &'a [u8]) -> (Self, Tree<'a, DwNode<'a>>) {
+    pub fn from_bytes(arena: &'a Arena, bytes: &'a [u8]) -> Self {
         let mut version = 0;
         let mut types_section = TypeSection {
             types: Array::new(arena, 0),
@@ -44,27 +37,7 @@ impl<'a> WasmData<'a> {
             function_called: Array::new(arena, 0),
             function_count: 0,
         };
-
-        let scratch = scratch_arena(&[arena]);
-        let mut dw_node_name_lookup =
-            HashMap::<SymbolName<'a>, usize, DefaultHashBuilder, &Arena>::with_capacity_in(
-                0, &scratch,
-            );
-        let mut function_index_lookup =
-            HashMap::<&str, u32, DefaultHashBuilder, &Arena>::with_capacity_in(0, &scratch);
-        let mut offset_index_lookup = HashMap::<DebugInfoOffset<usize>, usize>::new();
-        let mut dw_node_tree = Tree::new(
-            arena,
-            0,
-            DwNode {
-                ty: DwNodeType::Namespace,
-                name: SymbolName::root(),
-                size: 0,
-                fn_index: u32::MAX,
-            },
-        );
-
-        let mut debug_sections: Vec<_, &Arena> = Vec::with_capacity_in(128, &scratch);
+        let mut debug_sections = Vec::new_in(arena);
 
         for section in wasmparser::Parser::new(0).parse_all(bytes) {
             let payload = match section {
@@ -109,16 +82,6 @@ impl<'a> WasmData<'a> {
                 }
                 wasmparser::Payload::ImportSection(import_section_reader) => {
                     imports_count += import_section_reader.count();
-                    // for import in import_section_reader.into_iter() {
-                    //     let import = match import {
-                    //         Ok(import) => import,
-                    //         Err(err) => {
-                    //             panic!("Failed to parse import function with error {}", err)
-                    //         }
-                    //     };
-
-                    //     println!("Import: {} - {}", import.module, import.name);
-                    // }
                 }
                 wasmparser::Payload::FunctionSection(function_section_reader) => {
                     functions_section.function_types =
@@ -145,20 +108,6 @@ impl<'a> WasmData<'a> {
                         functions_section.function_names.push("");
                         functions_section.function_original_names.push("");
                     }
-
-                    // TODO: (bruno) something better than 5 * count!
-                    dw_node_tree = Tree::new(
-                        arena,
-                        10000 * count as usize,
-                        DwNode {
-                            ty: DwNodeType::Namespace,
-                            name: SymbolName::root(),
-                            size: 0,
-                            fn_index: u32::MAX,
-                        },
-                    );
-
-                    dw_node_name_lookup = HashMap::with_capacity_in(5 * count as usize, &scratch);
 
                     functions_section.function_count = count as usize;
                 }
@@ -190,15 +139,16 @@ impl<'a> WasmData<'a> {
                                                 ),
                                             };
 
+                                            let linkage_name = naming.name;
+                                            let demangled_name =
+                                                demangled_name(arena, linkage_name);
+
                                             functions_section.function_names
                                                 [(naming.index - imports_count) as usize] =
-                                                naming.name;
+                                                demangled_name;
                                             functions_section.function_original_names
                                                 [(naming.index - imports_count) as usize] =
-                                                naming.name;
-
-                                            function_index_lookup
-                                                .insert(naming.name, naming.index - imports_count);
+                                                linkage_name;
                                         }
                                     }
                                     _ => {}
@@ -207,7 +157,10 @@ impl<'a> WasmData<'a> {
                         }
                         wasmparser::KnownCustom::Unknown => {
                             if custom_section_reader.name().starts_with(".debug") {
-                                debug_sections.push(custom_section_reader);
+                                debug_sections.push((
+                                    custom_section_reader.name(),
+                                    custom_section_reader.data(),
+                                ));
                             }
                         }
                         _ => {}
@@ -254,427 +207,13 @@ impl<'a> WasmData<'a> {
         //     functions_section.function_called.push(dependants);
         // }
 
-        // Parse DWARF info
-        {
-            let start = Instant::now();
-            let dwarf = gimli::Dwarf::load::<_, ()>(|section_id| {
-                let section = debug_sections
-                    .iter()
-                    .find(|section| section.name() == section_id.name())
-                    .map_or::<&[u8], _>(&[], |section| section.data());
-
-                Ok(EndianSlice::new(section, LittleEndian))
-            })
-            .expect("Failed to load the DWARF info");
-
-            let root_symbol_name = dw_node_tree.root().name;
-
-            let mut dw_node_stack = Array::new(&scratch, 128);
-
-            // let mut namespaces = 0;
-            // let mut structs = 0;
-            // let mut functions = 0;
-            // let mut function_instances = 0;
-            // let mut function_inlined_instances = 0;
-
-            let mut units = dwarf.units();
-            while let Ok(Some(unit_header)) = units.next() {
-                if unit_header.type_() != UnitType::Compilation {
-                    println!("Unity type '{:?}' not supported!", unit_header.type_());
-                    continue;
-                }
-
-                let unit = dwarf.unit(unit_header).unwrap();
-                let unit_ref = unit.unit_ref(&dwarf);
-
-                dw_node_stack.clear();
-                dw_node_stack.push((1, 0, root_symbol_name));
-
-                let mut entries = unit_ref.entries_raw(None).unwrap();
-                let mut baseline_depth = 0;
-                while !entries.is_empty() {
-                    let offset = entries.next_offset();
-                    let depth = entries.next_depth();
-                    let Ok(abbreviation) = entries.read_abbreviation() else {
-                        continue;
-                    };
-
-                    let mut depth_diff = depth - baseline_depth;
-                    baseline_depth = depth;
-                    assert!(depth_diff <= 1, "Unexpected offset: {}>1", depth_diff);
-
-                    // If we are climbing up the DEI tree or going to the next sibling,
-                    // we need to potentially pop entries from the stack.
-                    if depth_diff <= 0 {
-                        while let Some((count, idx, _)) = dw_node_stack.last_mut() {
-                            // If we are climbing down not enouth to pop a node from stack
-                            // then we just adjust the depth and break from this loop
-                            if *count > -depth_diff {
-                                *count += depth_diff;
-                                break;
-                            } else {
-                                depth_diff += *count;
-                                *count = 0;
-                            }
-
-                            // Remove if necessary
-                            let idx = *idx;
-                            if idx == dw_node_tree.len() - 1
-                                && matches!(
-                                    dw_node_tree[idx].value.ty,
-                                    DwNodeType::Namespace | DwNodeType::Struct
-                                )
-                                && dw_node_tree[idx].first_child.is_none()
-                            {
-                                dw_node_name_lookup.remove(&dw_node_tree[idx].value.name);
-                                if idx == 1485 {
-                                    println!("Break");
-                                }
-                                dw_node_tree.pop();
-                            }
-
-                            dw_node_stack.pop();
-                        }
-                    }
-
-                    // If offset is 1, we are processing a child entry, so we should update
-                    // parent index with the previous function group index
-                    if depth_diff == 1 {
-                        dw_node_stack
-                            .last_mut()
-                            .expect("Failed to get entry from the stack. This is likely a bug")
-                            .0 += 1;
-                    }
-
-                    let (_, parent_dw_node_idx, parent_symbol_name) = dw_node_stack
-                        .last()
-                        .copied()
-                        .expect("Failed to get entry from the stack. This is likely a bug");
-
-                    let Some(abbreviation) = abbreviation else {
-                        continue;
-                    };
-
-                    #[allow(non_upper_case_globals)]
-                    #[allow(non_snake_case)]
-                    match abbreviation.tag() {
-                        DW_TAG_namespace => {
-                            let mut name_str = "";
-
-                            for attr_spec in abbreviation.attributes() {
-                                if let Ok(attr) = entries.read_attribute(*attr_spec) {
-                                    if attr.name() == DW_AT_name {
-                                        name_str = unsafe {
-                                            str::from_utf8_unchecked(
-                                                attr.string_value(&dwarf.debug_str)
-                                                    .unwrap()
-                                                    .slice(),
-                                            )
-                                        };
-                                    }
-                                }
-                            }
-
-                            let new_symbol_name =
-                                SymbolName::new_with_parent(parent_symbol_name, name_str);
-
-                            let dw_node_idx = match dw_node_name_lookup
-                                .get(&new_symbol_name)
-                                .copied()
-                            {
-                                Some(dw_node_idx) => dw_node_idx,
-                                None => {
-                                    let ty = match abbreviation.tag() {
-                                        DW_TAG_structure_type => DwNodeType::Struct,
-                                        DW_TAG_namespace if name_str.starts_with("{impl#") => {
-                                            DwNodeType::Impl
-                                        }
-                                        _ => DwNodeType::Namespace,
-                                    };
-
-                                    dw_node_tree.add_child(
-                                        parent_dw_node_idx,
-                                        DwNode {
-                                            ty,
-                                            name: new_symbol_name,
-                                            size: 0,
-                                            fn_index: u32::MAX,
-                                        },
-                                    );
-                                    let new_dw_node_idx = dw_node_tree.len() - 1;
-
-                                    let offset = offset.to_debug_info_offset(&unit_header).unwrap();
-
-                                    offset_index_lookup.insert(offset, new_dw_node_idx);
-                                    dw_node_name_lookup.insert(new_symbol_name, new_dw_node_idx);
-
-                                    new_dw_node_idx
-                                }
-                            };
-
-                            dw_node_stack.push((0, dw_node_idx, new_symbol_name));
-                        }
-                        DW_TAG_structure_type if depth > 1 => {
-                            let mut name_str = "";
-
-                            for attr_spec in abbreviation.attributes() {
-                                if let Ok(attr) = entries.read_attribute(*attr_spec) {
-                                    if attr.name() == DW_AT_name {
-                                        name_str = unsafe {
-                                            str::from_utf8_unchecked(
-                                                attr.string_value(&dwarf.debug_str)
-                                                    .unwrap()
-                                                    .slice(),
-                                            )
-                                        };
-                                    }
-                                }
-                            }
-
-                            let new_symbol_name =
-                                SymbolName::new_with_parent(parent_symbol_name, name_str);
-
-                            let dw_node_idx = match dw_node_name_lookup
-                                .get(&new_symbol_name)
-                                .copied()
-                            {
-                                Some(dw_node_idx) => dw_node_idx,
-                                None => {
-                                    dw_node_tree.add_child(
-                                        parent_dw_node_idx,
-                                        DwNode {
-                                            ty: DwNodeType::Struct,
-                                            name: new_symbol_name,
-                                            size: 0,
-                                            fn_index: u32::MAX,
-                                        },
-                                    );
-                                    let new_dw_node_idx = dw_node_tree.len() - 1;
-
-                                    let offset = offset.to_debug_info_offset(&unit_header).unwrap();
-
-                                    offset_index_lookup.insert(offset, new_dw_node_idx);
-                                    dw_node_name_lookup.insert(new_symbol_name, new_dw_node_idx);
-
-                                    new_dw_node_idx
-                                }
-                            };
-
-                            dw_node_stack.push((0, dw_node_idx, new_symbol_name));
-                        }
-                        DW_TAG_subprogram => {
-                            let mut linkage_name = "";
-                            let mut name = "";
-                            let mut specification = None;
-                            let mut inlined = false;
-                            let mut low_pc = 0;
-                            let mut high_pc = 0;
-
-                            for attr_spec in abbreviation.attributes() {
-                                let attr = entries.read_attribute(*attr_spec).unwrap();
-
-                                #[allow(non_upper_case_globals)]
-                                #[allow(non_snake_case)]
-                                match attr.name() {
-                                    DW_AT_name => {
-                                        if let Some(attr_value) =
-                                            attr.string_value(&dwarf.debug_str)
-                                        {
-                                            name = unsafe {
-                                                str::from_utf8_unchecked(attr_value.slice())
-                                            };
-                                        }
-                                    }
-                                    DW_AT_linkage_name => {
-                                        if let Some(attr_value) =
-                                            attr.string_value(&dwarf.debug_str)
-                                        {
-                                            linkage_name = unsafe {
-                                                str::from_utf8_unchecked(attr_value.slice())
-                                            };
-                                        }
-                                    }
-                                    DW_AT_specification => {
-                                        if let AttributeValue::UnitRef(unit_offset) =
-                                            attr.raw_value()
-                                        {
-                                            specification = Some(unit_offset);
-                                        }
-                                    }
-                                    DW_AT_inline => {
-                                        let attr_value = attr.u8_value().expect(
-                                            "Failed to parse subprogram 'inline' attribute value",
-                                        );
-
-                                        if attr_value == DW_INL_inlined.0 {
-                                            inlined = true;
-                                        }
-                                    }
-                                    DW_AT_low_pc => match attr.raw_value() {
-                                        AttributeValue::Addr(addr) => {
-                                            low_pc = addr;
-                                        }
-                                        _ => {
-                                            panic!(
-                                                "Unable to parse 'low_pc' attribute: '{:?}'",
-                                                attr
-                                            );
-                                        }
-                                    },
-                                    DW_AT_high_pc => match attr.raw_value() {
-                                        AttributeValue::Addr(addr) => {
-                                            high_pc = addr - low_pc;
-                                        }
-                                        AttributeValue::Data4(data) => high_pc = data as u64,
-                                        _ => {
-                                            panic!(
-                                                "Unable to parse 'high_pc' attribute: '{:?}'",
-                                                attr
-                                            );
-                                        }
-                                    },
-                                    _ => {}
-                                }
-                            }
-
-                            let function_symbol_name =
-                                SymbolName::new_with_parent(parent_symbol_name, name);
-
-                            // When the name is empty, it's usually an inline DEI of a previously
-                            // declared function. In those cases, we can get the original function
-                            // info by looking at the symbol at the given specification location.
-                            if name.is_empty() {
-                                if let Some(specification) = specification {
-                                    let offset =
-                                        specification.to_debug_info_offset(&unit_header).unwrap();
-
-                                    let index =
-                                        offset_index_lookup.get(&offset).copied().expect(&format!(
-                                            "Failed to resolve specification offset: '{}'",
-                                            offset.0
-                                        ));
-
-                                    debug_assert!(matches!(
-                                        dw_node_tree.get(index).ty,
-                                        DwNodeType::FunctionInstance
-                                            | DwNodeType::FunctionInlinedInstance
-                                    ));
-
-                                    dw_node_tree.get_mut(index).ty =
-                                        DwNodeType::FunctionInlinedInstance;
-                                }
-                            } else {
-                                let parent_dw_node = *dw_node_tree.get(parent_dw_node_idx);
-                                let function_dw_node_idx = match dw_node_name_lookup
-                                    .get(&function_symbol_name)
-                                {
-                                    Some(dw_node_idx) => *dw_node_idx,
-                                    None => {
-                                        let demangled_name = demangled_name(&arena, linkage_name);
-                                        if matches!(parent_dw_node.ty, DwNodeType::Impl) {
-                                            if let Some((type_name, trait_name)) =
-                                                extract_trait_from_demangled_name(demangled_name)
-                                            {
-                                                let mut trait_impl_name = String::new(
-                                                    arena,
-                                                    type_name.len()
-                                                        + trait_name.len()
-                                                        + " for ".len(),
-                                                );
-
-                                                trait_impl_name.push_str(trait_name);
-                                                trait_impl_name.push_str(" for ");
-                                                trait_impl_name.push_str(type_name);
-                                                dw_node_tree.get_mut(parent_dw_node_idx).name =
-                                                    SymbolName::new_with_parent(
-                                                        parent_symbol_name,
-                                                        trait_impl_name.to_str(),
-                                                    );
-                                            } else {
-                                                let mut trait_impl_name =
-                                                    String::new(arena, demangled_name.len());
-
-                                                trait_impl_name.push_str(demangled_name);
-                                                dw_node_tree.get_mut(parent_dw_node_idx).name =
-                                                    SymbolName::new_with_parent(
-                                                        parent_symbol_name,
-                                                        trait_impl_name.to_str(),
-                                                    );
-                                            }
-                                        }
-
-                                        let fn_index =
-                                            function_index_lookup.get(linkage_name).copied();
-
-                                        if let Some(fn_index) = fn_index {
-                                            functions_section.function_names[fn_index as usize] =
-                                                demangled_name;
-                                            functions_section.function_original_names
-                                                [fn_index as usize] = linkage_name;
-                                        }
-
-                                        dw_node_tree.add_child(
-                                            parent_dw_node_idx,
-                                            DwNode {
-                                                ty: if !inlined {
-                                                    DwNodeType::FunctionInstance
-                                                } else {
-                                                    DwNodeType::FunctionInlinedInstance
-                                                },
-                                                name: function_symbol_name,
-                                                size: high_pc as u32,
-                                                fn_index: fn_index.unwrap_or(u32::MAX),
-                                            },
-                                        );
-
-                                        let new_dw_node_idx = dw_node_tree.len() - 1;
-
-                                        dw_node_name_lookup
-                                            .insert(function_symbol_name, new_dw_node_idx);
-
-                                        new_dw_node_idx
-                                    }
-                                };
-
-                                let offset = offset.to_debug_info_offset(&unit_header).unwrap();
-                                offset_index_lookup.insert(offset, function_dw_node_idx);
-                            }
-                        }
-                        _ => {
-                            entries
-                                .skip_attributes(abbreviation.attributes())
-                                .expect("Failed to skip attributes");
-                        }
-                    }
-                }
-            }
-
-            for idx in (0..dw_node_tree.len()).rev() {
-                let size = dw_node_tree.get(idx).size;
-                if let Some(parent_idx) = dw_node_tree.get_parent_index(idx) {
-                    dw_node_tree.get_mut(parent_idx).size += size;
-                }
-            }
-
-            println!("Dwarf parsing: {}s", (Instant::now() - start).as_secs_f32());
-            // println!(
-            //     "Namespace {} | Structs {} | Functions {} | Function Instances {} | Function Inlined Instances {}",
-            //     namespaces, structs, functions, function_instances, function_inlined_instances
-            // );
+        Self {
+            bytes,
+            version,
+            types_section,
+            functions_section,
+            debug_sections,
         }
-
-        drop(function_index_lookup);
-        drop(dw_node_name_lookup);
-
-        (
-            Self {
-                bytes,
-                version,
-                types_section,
-                functions_section,
-            },
-            dw_node_tree,
-        )
     }
 }
 
@@ -704,118 +243,4 @@ fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {
 
     demangled_name.shrink_to_fit();
     demangled_name.to_str()
-}
-
-fn parse_type_as_trait<'a>(demangled_name: &'a str) -> Option<(&'a str, &'a str)> {
-    if demangled_name.is_empty() {
-        return None;
-    }
-
-    let bytes_len = demangled_name.as_bytes().len();
-    let demangled_name =
-        unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[1..(bytes_len - 1)]) };
-
-    if let Some(position) = demangled_name.find(" as ") {
-        Some((
-            &demangled_name[0..position],
-            &demangled_name[(position + " as ".len())..],
-        ))
-    } else {
-        None
-    }
-}
-
-fn extract_trait_from_demangled_name<'a>(demangled_name: &'a str) -> Option<(&'a str, &'a str)> {
-    let mut colon = false;
-    let mut start = 0;
-    let mut end = 0;
-    let mut ticks = 0;
-    let mut brackets = 0;
-
-    let mut contains_space = false;
-    let mut is_type_as_trait = false;
-
-    while end < demangled_name.as_bytes().len() {
-        let c = demangled_name.as_bytes()[end];
-        match c {
-            b':' if colon && brackets == 0 && ticks == 0 => {
-                end += 1;
-                start = end;
-                contains_space = false;
-            }
-            b'<' => {
-                if start == end {
-                    is_type_as_trait = true;
-                }
-
-                ticks += 1;
-                end += 1;
-            }
-            b'>' => {
-                ticks -= 1;
-                end += 1;
-
-                if is_type_as_trait && contains_space && ticks == 0 {
-                    // This is the slice of the type `<foo::Type as bar::Trait>`
-                    let type_as_trait_str =
-                        unsafe { str::from_utf8_unchecked(&demangled_name.as_bytes()[start..end]) };
-
-                    if let Some((type_name, trait_name)) = parse_type_as_trait(type_as_trait_str) {
-                        return Some((type_name, trait_name));
-                    } else {
-                        return None;
-                    }
-                }
-            }
-            b'[' => {
-                brackets += 1;
-                end += 1;
-            }
-            b']' => {
-                brackets -= 1;
-                end += 1;
-            }
-            b' ' => {
-                contains_space = true;
-                end += 1;
-            }
-            _ => {
-                end += 1;
-            }
-        }
-
-        colon = c == b':';
-    }
-
-    None
-}
-
-#[cfg(test)]
-mod test {
-    use super::extract_trait_from_demangled_name;
-
-    #[test]
-    fn extract_trait_from_demangled_name_works() {
-        assert_eq!(
-            extract_trait_from_demangled_name("<foo::bar::BarImpl as other::TraitName>"),
-            Some(("foo::bar::BarImpl", "other::TraitName"))
-        );
-        assert_eq!(
-            extract_trait_from_demangled_name(
-                "foo::<bar::BarImpl as other::TraitName>::foo_function"
-            ),
-            Some(("bar::BarImpl", "other::TraitName"))
-        );
-
-        assert_eq!(
-            extract_trait_from_demangled_name("foo::bar::BarImpl<usize>"),
-            None
-        );
-        assert_eq!(extract_trait_from_demangled_name("foo::bar::BarImpl"), None);
-
-        assert_eq!(
-            extract_trait_from_demangled_name("<*const usize as other::TraitName>::foo_function"),
-            Some(("*const usize", "other::TraitName"))
-        );
-    }
 }
