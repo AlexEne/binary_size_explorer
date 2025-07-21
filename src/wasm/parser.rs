@@ -36,6 +36,7 @@ impl<'a> WasmData<'a> {
             function_bodies: Array::new(arena, 0),
             function_called: Array::new(arena, 0),
             function_count: 0,
+            size_in_bytes: 0,
         };
         let mut debug_sections = Vec::new_in(arena);
 
@@ -115,6 +116,8 @@ impl<'a> WasmData<'a> {
                     functions_section
                         .function_sizes
                         .push(function_body.as_bytes().len() as u32);
+                    functions_section.size_in_bytes += function_body.as_bytes().len();
+
                     functions_section.function_bodies.push(function_body);
                 }
                 wasmparser::Payload::CustomSection(custom_section_reader) => {
@@ -230,6 +233,7 @@ pub struct FunctionSection<'a> {
     pub function_sizes: Array<'a, u32>,
     pub function_called: Array<'a, Array<'a, u32>>,
     pub function_count: usize,
+    pub size_in_bytes: usize,
 }
 
 fn demangled_name<'a>(arena: &'a Arena, name: &'a str) -> &'a str {

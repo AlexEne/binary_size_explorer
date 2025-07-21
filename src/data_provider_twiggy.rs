@@ -294,7 +294,6 @@ impl DataProviderTwiggy<'_> {
 
                 if added {
                     self.total_size += function_size;
-                    self.total_percent += 0.0;
                 }
             }
 
@@ -311,6 +310,8 @@ impl DataProviderTwiggy<'_> {
                     .cmp(&raw_data[*b].function_property.retained_size_bytes)
             });
         }
+
+        self.total_percent = 100.0 * self.total_size as f32 / function_section.size_in_bytes as f32;
 
         // Update dominators
         {
