@@ -15,7 +15,7 @@ bitflags::bitflags! {
 pub struct TreeItemState {
     // pub descendants_count: u32,
     pub flags: TreeItemStateFlags,
-    pub indent: u8,
+    pub depth: u8,
 }
 
 impl TreeItemState {
@@ -40,6 +40,11 @@ pub struct TreeState<'a, T, D> {
     /// to use when displaying each item one after the other.
     pub row_indices: Array<'a, usize>,
 
+    /// The minimum depth in the tree to start displaying items.
+    /// This is useful in case where the first few levels of
+    /// the tree are not meant to be displayed in the UI.
+    pub min_depth_to_display: u8,
+
     pub sort_fn: fn((&T, &D), (&T, &D)) -> Ordering,
 
     pub hovered_index: usize,
@@ -50,6 +55,7 @@ impl<'a, T, D> TreeState<'a, T, D> {
     pub fn from_tree(
         arena: &'a Arena,
         tree: Tree<'a, T>,
+        min_depth_to_display: u8,
         state: fn(&T, usize) -> D,
         sort: fn((&T, &D), (&T, &D)) -> Ordering,
     ) -> Self {
@@ -59,7 +65,7 @@ impl<'a, T, D> TreeState<'a, T, D> {
         for idx in 0..tree.len() {
             items_state.push(TreeItemState {
                 flags: TreeItemStateFlags::VISIBLE,
-                indent: 0,
+                depth: 0,
             });
             items_ui_data.push(state(tree.get(idx), idx));
         }
@@ -71,9 +77,9 @@ impl<'a, T, D> TreeState<'a, T, D> {
             state: fn(&T, usize) -> D,
             sort: fn((&T, &D), (&T, &D)) -> Ordering,
             item_idx: usize,
-            indent: u8,
+            depth: u8,
         ) {
-            items_state[item_idx].indent = indent;
+            items_state[item_idx].depth = depth;
 
             let scratch = scratch_arena(&[]);
             let mut children_idx: Vec<usize, &Arena> = Vec::new_in(&scratch);
@@ -97,7 +103,7 @@ impl<'a, T, D> TreeState<'a, T, D> {
                     state,
                     sort,
                     child_idx,
-                    indent + 1,
+                    depth + 1,
                 );
             }
         }
@@ -123,6 +129,7 @@ impl<'a, T, D> TreeState<'a, T, D> {
             items_state,
             items_ui_data,
             row_indices,
+            min_depth_to_display,
             sort_fn: sort,
             hovered_index: usize::MAX,
             selected_index: usize::MAX,
@@ -142,7 +149,9 @@ impl<'a, T, D> TreeState<'a, T, D> {
         node_stack.push(0);
 
         while let Some(idx) = node_stack.pop() {
-            self.row_indices.push(idx);
+            if self.items_state[idx].depth >= self.min_depth_to_display {
+                self.row_indices.push(idx);
+            }
 
             if !self.items_state[idx]
                 .flags
@@ -193,7 +202,7 @@ impl TreeView {
         row_height_sans_spacing: f32,
         mut add_item: impl FnMut(&mut Ui, TreeItem<'_, T, S>),
     ) -> ScrollAreaOutput<()> {
-        let items_count = state.row_indices.len() - 1;
+        let items_count = state.row_indices.len();
         let available_height = ui.available_height();
         let available_width = ui.available_width();
 
@@ -211,14 +220,12 @@ impl TreeView {
         let mut item_state_changed = false;
 
         let scroll_area_output = table
-            .header(20.0, |mut header| {
-                header.col(|ui| {
-                    ui.strong("Name");
-                });
+            .header(0.0, |mut header| {
+                header.col(|_| {});
             })
             .body(|body| {
                 body.rows(18.0, items_count, |mut row| {
-                    let item_index = state.row_indices[row.index() + 1];
+                    let item_index = state.row_indices[row.index()];
 
                     row.set_hovered(state.hovered_index == item_index);
                     row.set_selected(state.selected_index == item_index);
@@ -262,7 +269,9 @@ impl TreeView {
                         };
 
                         // Indent the rect before rendering icon and content
-                        let indent = 32.0 * state.items_state[item_index].indent as f32;
+                        let indent = 32.0
+                            * (state.items_state[item_index].depth - state.min_depth_to_display)
+                                as f32;
                         rect.min.x += indent;
 
                         let (mut icon_rect, _) = ui.spacing().icon_rectangles(rect);

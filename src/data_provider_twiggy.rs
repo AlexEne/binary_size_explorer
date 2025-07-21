@@ -193,6 +193,7 @@ impl<'a> DataProviderTwiggy<'a> {
         let dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState> = TreeState::from_tree(
             arena,
             dw_data.nodes,
+            1,
             |item, _| FunctionItemState { size: item.size },
             |(_, a), (_, b)| b.size.cmp(&a.size),
         );
