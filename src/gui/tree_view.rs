@@ -2,7 +2,7 @@ use std::{cmp::Ordering, time::Instant};
 
 use egui::{Id, Rect, Response, Sense, Ui, UiBuilder, pos2, scroll_area::ScrollAreaOutput, vec2};
 
-use crate::arena::{Arena, array::Array, scratch::scratch_arena, tree::Tree};
+use crate::arena::{Arena, array::Array, scratch::scratch_arena, tree::Tree, vec::Vec};
 
 bitflags::bitflags! {
     pub struct TreeItemStateFlags: u8 {
@@ -82,7 +82,7 @@ impl<'a, T, D> TreeState<'a, T, D> {
             items_state[item_idx].depth = depth;
 
             let scratch = scratch_arena(&[]);
-            let mut children_idx: Vec<usize, &Arena> = Vec::new_in(&scratch);
+            let mut children_idx = Vec::new(&scratch, 1024);
 
             for child_idx in tree.get_children(item_idx) {
                 children_idx.push(child_idx);
@@ -144,7 +144,7 @@ impl<'a, T, D> TreeState<'a, T, D> {
         self.row_indices.clear();
 
         let scratch = scratch_arena(&[]);
-        let mut node_stack: Vec<_, &Arena> = Vec::with_capacity_in(1024 * 1024, &scratch);
+        let mut node_stack = Vec::new(&scratch, 1024 * 1024);
 
         node_stack.push(0);
 

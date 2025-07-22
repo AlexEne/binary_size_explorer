@@ -1,5 +1,5 @@
 use crate::{
-    arena::{Arena, array::Array, scratch::scratch_arena, string::String},
+    arena::{Arena, array::Array, scratch::scratch_arena, string::String, vec::Vec},
     data_provider::{
         CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
@@ -40,14 +40,14 @@ pub struct DataProviderTwiggy<'a> {
     pub total_size: u32,
     pub total_percent: f32,
 
-    pub top_view_items_filtered: Vec<usize, &'a Arena>,
+    pub top_view_items_filtered: Vec<'a, usize>,
     pub dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState>,
 
     /// The array of code locations loaded from the file.
     code_locations: Array<'a, CodeLocation<'a>>,
 
     /// This is a map of source file / line locations -> Assembly
-    locations_reverse_map: HashMap<u64, Vec<u64>, DefaultHashBuilder, &'a Arena>,
+    locations_reverse_map: HashMap<u64, std::vec::Vec<u64>, DefaultHashBuilder, &'a Arena>,
     addr_to_location: HashMap<u64, usize, DefaultHashBuilder, &'a Arena>,
 }
 
@@ -143,7 +143,7 @@ impl<'a> DataProviderTwiggy<'a> {
         // Compute code locations
         let mut code_locations = Array::new(arena, code_location_count);
         // CL index -> addresses
-        let mut locations_reverse_map: HashMap<u64, Vec<u64>, _, &'a Arena> =
+        let mut locations_reverse_map: HashMap<u64, std::vec::Vec<u64>, _, &'a Arena> =
             HashMap::with_capacity_in(code_location_count, arena);
         // Add -> CL index
         let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
@@ -189,7 +189,7 @@ impl<'a> DataProviderTwiggy<'a> {
             }
         }
 
-        let top_view_items_filtered = Vec::with_capacity_in(raw_data.len(), arena);
+        let top_view_items_filtered = Vec::new(arena, raw_data.len());
         let dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState> = TreeState::from_tree(
             arena,
             dw_data.nodes,
@@ -459,7 +459,7 @@ impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
         file: &str,
         line: u32,
         _column: u32,
-    ) -> Option<&Vec<u64>> {
+    ) -> Option<&std::vec::Vec<u64>> {
         let mut hasher = DefaultHasher::new();
         file.hash(&mut hasher);
         line.hash(&mut hasher);

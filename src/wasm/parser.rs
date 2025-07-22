@@ -1,7 +1,7 @@
 use std::ops::Range;
 use wasmparser::{Encoding, FuncType, FunctionBody};
 
-use crate::arena::{Arena, array::Array, string::String};
+use crate::arena::{Arena, array::Array, string::String, vec::Vec};
 
 pub struct WasmData<'a> {
     pub bytes: &'a [u8],
@@ -16,7 +16,7 @@ pub struct WasmData<'a> {
     pub functions_section: FunctionSection<'a>,
 
     /// All the `debug_*` sections in the bundle.
-    pub debug_sections: Vec<(&'a str, &'a [u8]), &'a Arena>,
+    pub debug_sections: Vec<'a, (&'a str, &'a [u8])>,
 }
 
 impl<'a> WasmData<'a> {
@@ -38,7 +38,7 @@ impl<'a> WasmData<'a> {
             function_count: 0,
             size_in_bytes: 0,
         };
-        let mut debug_sections = Vec::new_in(arena);
+        let mut debug_sections = Vec::new(arena, 0);
 
         for section in wasmparser::Parser::new(0).parse_all(bytes) {
             let payload = match section {

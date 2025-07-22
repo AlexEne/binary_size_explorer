@@ -9,6 +9,7 @@ pub mod array;
 pub mod scratch;
 pub mod string;
 pub mod tree;
+pub mod vec;
 
 #[cfg(unix)]
 pub mod memory {
