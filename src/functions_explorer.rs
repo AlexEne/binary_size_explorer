@@ -230,8 +230,11 @@ impl FunctionsExplorer {
                 }
             };
 
-            let retained_size_percent =
-                100.0 * (item_ui_data.size as f32 / dominator_view.total_size as f32);
+            let mut retained_size_percent = 0.0;
+            if dominator_view.total_size > 0 {
+                retained_size_percent =
+                    100.0 * (item_ui_data.size as f32 / dominator_view.total_size as f32);
+            }
 
             let available = ui.available_rect_before_wrap();
 
