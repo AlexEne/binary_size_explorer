@@ -4,7 +4,7 @@ use crate::{
         CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
         FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
     },
-    dwarf::{DwData, DwNode, DwNodeType},
+    dwarf::{DwData, DwFileEntry, DwLineInfo, DwNode, DwNodeType},
     gui::tree_view::{TreeItemStateFlags, TreeState},
     wasm::parser::WasmData,
 };
@@ -12,6 +12,7 @@ use addr2line::{
     LookupResult,
     gimli::{EndianSlice, LittleEndian},
 };
+use gimli::FileEntry;
 use hashbrown::{DefaultHashBuilder, HashMap};
 use std::{
     fs::File,
@@ -33,6 +34,9 @@ pub struct FunctionData<'a> {
 
 pub struct DataProviderTwiggy<'a> {
     pub wasm_data: WasmData<'a>,
+
+    pub dw_line_infos: Array<'a, DwLineInfo>,
+    pub dw_file_entries: Array<'a, DwFileEntry<'a>>,
 
     pub view_mode: ViewMode,
     pub raw_data: Array<'a, FunctionData<'a>>,
@@ -200,6 +204,8 @@ impl<'a> DataProviderTwiggy<'a> {
 
         let mut provider = DataProviderTwiggy {
             wasm_data: wasm_data,
+            dw_line_infos: dw_data.line_infos,
+            dw_file_entries: dw_data.file_entries,
             view_mode: ViewMode::Tops,
             raw_data,
             total_size: 0,

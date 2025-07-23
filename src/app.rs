@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
+use std::time::Instant;
 
 #[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 pub enum FileType {
@@ -394,18 +395,32 @@ impl eframe::App for TemplateApp {
                             .show_functions_table(ui, data_provider);
 
                         if self.selected_row != self.functions_explorer.selected_row {
+                            let start = Instant::now();
+
                             self.selected_row = self.functions_explorer.selected_row;
                             if let Some(idx) = self.functions_explorer.selected_row {
-                                let (
-                                    mut asm_row_data,
-                                    op_start_idx,
-                                    ops_addresses,
-                                    first_selected_address,
-                                ): (
+                                // let idx = 3;
+
+                                println!(
+                                    "Boddy {} addr {}",
+                                    data_provider
+                                        .wasm_data
+                                        .functions_section
+                                        .function_original_names[idx],
+                                    data_provider.wasm_data.functions_section.function_bodies[idx]
+                                        .range()
+                                        .start,
+                                );
+
+                                let first_selected_address =
+                                    data_provider.wasm_data.functions_section.function_bodies[idx]
+                                        .range()
+                                        .start as u64;
+
+                                let (mut asm_row_data, op_start_idx, ops_addresses): (
                                     Vec<RowData>,
                                     usize,
                                     Vec<u64>,
-                                    u64,
                                 ) = {
                                     let mut row_data = Vec::new();
                                     let mut ops_addresses = Vec::new();
@@ -438,7 +453,6 @@ impl eframe::App for TemplateApp {
                                         row_data,
                                         data_provider.get_locals_at(idx).len(),
                                         ops_addresses,
-                                        data_provider.get_start_addr(idx),
                                     )
                                 };
 
@@ -452,6 +466,39 @@ impl eframe::App for TemplateApp {
                                     egui::Color32::LIGHT_BLUE,
                                     egui::Color32::LIGHT_GRAY,
                                 ];
+
+                                // let dw_tree = &data_provider.dominator_state.tree;
+                                let line_infos = &data_provider.dw_line_infos;
+                                let file_entries = &data_provider.dw_file_entries;
+
+                                let code_section_start =
+                                    data_provider.wasm_data.functions_section.range.start as u64;
+                                let instruction_address =
+                                    first_selected_address - code_section_start;
+
+                                let mut line_info = None;
+                                for idx in 0..line_infos.len() {
+                                    if line_infos[idx].address == instruction_address {
+                                        println!(
+                                            "Addresses {} {}",
+                                            line_infos[idx].address, instruction_address
+                                        );
+                                        line_info = Some(line_infos[idx]);
+                                        break;
+                                    }
+                                }
+
+                                if let Some(line_info) = line_info {
+                                    let file_entry = &file_entries[line_info.file_entry_idx];
+                                    println!(
+                                        "File entry: {}/{}/{}:{}:{}",
+                                        file_entry.cu_directory,
+                                        file_entry.directory,
+                                        file_entry.file,
+                                        line_info.line,
+                                        line_info.col
+                                    )
+                                }
 
                                 let mut selected_file_path = "";
                                 if let Some(location) =
@@ -521,6 +568,11 @@ impl eframe::App for TemplateApp {
                                     }
                                 });
                             }
+
+                            println!(
+                                "Select Row time: {}",
+                                (Instant::now() - start).as_secs_f32()
+                            );
                         }
                     }
                 }

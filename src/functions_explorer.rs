@@ -325,6 +325,9 @@ impl FunctionsExplorer {
                     "Size: {:5.2}(MB)",
                     item_ui_data.size as f32 / (1024.0 * 1024.0)
                 );
+                _ = writeln!(&mut buffer, "File: {}", dw_node.decl_file);
+                _ = writeln!(&mut buffer, "Line: {}", dw_node.decl_line);
+                _ = writeln!(&mut buffer, "Column: {}", dw_node.decl_column);
 
                 percentage_response.show_tooltip_ui(|ui| {
                     ui.monospace(std::str::from_utf8(&buffer).unwrap());

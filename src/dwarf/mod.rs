@@ -4,9 +4,10 @@ use std::{
 };
 
 use gimli::{
-    AttributeValue, DW_AT_high_pc, DW_AT_inline, DW_AT_linkage_name, DW_AT_low_pc, DW_AT_name,
-    DW_AT_specification, DW_INL_inlined, DW_TAG_namespace, DW_TAG_structure_type,
-    DW_TAG_subprogram, EndianSlice, LittleEndian, UnitType,
+    AttributeValue, DW_AT_decl_column, DW_AT_decl_file, DW_AT_decl_line, DW_AT_high_pc,
+    DW_AT_inline, DW_AT_linkage_name, DW_AT_low_pc, DW_AT_name, DW_AT_specification,
+    DW_INL_inlined, DW_TAG_namespace, DW_TAG_structure_type, DW_TAG_subprogram, EndianSlice,
+    FileEntry, LittleEndian, UnitType,
 };
 use hashbrown::{DefaultHashBuilder, HashMap};
 
@@ -16,6 +17,9 @@ use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String, 
 pub struct DwNode<'a> {
     pub ty: DwNodeType,
     pub name: SymbolName<'a>,
+    pub decl_file: &'a str,
+    pub decl_line: u32,
+    pub decl_column: u32,
     pub size: u32,
 }
 
@@ -26,6 +30,21 @@ pub enum DwNodeType {
     Impl,
     FunctionInstance,
     FunctionInlinedInstance,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DwFileEntry<'a> {
+    pub cu_directory: &'a str,
+    pub directory: &'a str,
+    pub file: &'a str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DwLineInfo {
+    pub address: u64,
+    pub file_entry_idx: usize,
+    pub line: usize,
+    pub col: usize,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -59,6 +78,8 @@ impl<'a> SymbolName<'a> {
 
 pub struct DwData<'a> {
     pub nodes: Tree<'a, DwNode<'a>>,
+    pub line_infos: Array<'a, DwLineInfo>,
+    pub file_entries: Array<'a, DwFileEntry<'a>>,
 }
 
 impl<'a> DwData<'a> {
@@ -66,16 +87,6 @@ impl<'a> DwData<'a> {
         arena: &'a Arena,
         debug_sections: &Vec<(&'a str, &'a [u8]), &'a Arena>,
     ) -> Self {
-        let mut dw_node_tree = Tree::new(
-            arena,
-            1024,
-            DwNode {
-                ty: DwNodeType::Namespace,
-                name: SymbolName::root(),
-                size: 0,
-            },
-        );
-
         let start = Instant::now();
         let dwarf = gimli::Dwarf::load::<_, ()>(|section_id| {
             let section = debug_sections
@@ -87,7 +98,7 @@ impl<'a> DwData<'a> {
         })
         .expect("Failed to load the DWARF info");
 
-        let root_symbol_name = dw_node_tree.root().name;
+        let root_symbol_name = SymbolName::root();
 
         let scratch = scratch_arena(&[arena]);
         let mut dw_node_stack = Array::new(&scratch, 128);
@@ -95,6 +106,53 @@ impl<'a> DwData<'a> {
             HashMap::<SymbolName<'a>, usize, DefaultHashBuilder, &Arena>::with_capacity_in(
                 0, &scratch,
             );
+
+        let mut total_rows = 0;
+        let mut total_files = 0;
+        let mut units = dwarf.units();
+        while let Ok(Some(unit_header)) = units.next() {
+            if unit_header.type_() != UnitType::Compilation {
+                println!("Unity type '{:?}' not supported!", unit_header.type_());
+                continue;
+            }
+
+            let unit = dwarf.unit(unit_header).unwrap();
+
+            let Some(program) = unit.line_program.clone() else {
+                println!(
+                    "Skipping unit '{}': missing line program!",
+                    unit.name.map(dw_name_to_str).unwrap_or("")
+                );
+                continue;
+            };
+
+            total_files += program.header().file_names().len();
+
+            let (com_program, sequences) = program.clone().sequences().unwrap();
+            for sequence in &sequences {
+                let mut resumed_rows = com_program.resume_from(sequence);
+
+                while let Some(_) = resumed_rows.next_row().unwrap() {
+                    total_rows += 1;
+                }
+            }
+        }
+
+        let mut line_infos = Array::new(arena, total_rows);
+        let mut file_entries = Array::new(arena, total_files);
+
+        let mut dw_node_tree = Tree::new(
+            arena,
+            1024,
+            DwNode {
+                ty: DwNodeType::Namespace,
+                name: SymbolName::root(),
+                decl_file: "",
+                decl_line: 0,
+                decl_column: 0,
+                size: 0,
+            },
+        );
 
         let mut units = dwarf.units();
         while let Ok(Some(unit_header)) = units.next() {
@@ -105,6 +163,85 @@ impl<'a> DwData<'a> {
 
             let unit = dwarf.unit(unit_header).unwrap();
             let unit_ref = unit.unit_ref(&dwarf);
+
+            let comp_dir = unit_ref.comp_dir.map(dw_name_to_str).unwrap_or("");
+            let low_pc = unit_ref.low_pc;
+
+            let Some(program) = unit.line_program.clone() else {
+                println!(
+                    "Skipping unit '{}': missing line program!",
+                    unit.name.map(dw_name_to_str).unwrap_or("")
+                );
+                continue;
+            };
+
+            let file_names = program.header().file_names();
+
+            let file_base_idx = file_entries.len();
+
+            for file_name in file_names {
+                let file = file_name
+                    .path_name()
+                    .string_value(&dwarf.debug_str)
+                    .map(dw_name_to_str)
+                    .unwrap_or("");
+
+                let directory = file_name
+                    .directory(program.header())
+                    .and_then(|directory| directory.string_value(&dwarf.debug_str))
+                    .map(dw_name_to_str)
+                    .unwrap_or("");
+
+                file_entries.push(DwFileEntry {
+                    cu_directory: comp_dir,
+                    directory,
+                    file,
+                });
+                // println!(
+                //     "File name: {idx}, {}/{}",
+                //     unsafe {
+                //         str::from_utf8_unchecked(
+                //             file_name
+                //                 .directory(program.header())
+                //                 .unwrap()
+                //                 .string_value(&dwarf.debug_str)
+                //                 .unwrap()
+                //                 .slice(),
+                //         )
+                //     },
+                //     unsafe {
+                //         str::from_utf8_unchecked(
+                //             file_name
+                //                 .path_name()
+                //                 .string_value(&dwarf.debug_str)
+                //                 .unwrap()
+                //                 .slice(),
+                //         )
+                //     }
+                // );
+            }
+
+            let (com_program, sequences) = program.clone().sequences().unwrap();
+            for sequence in &sequences {
+                let mut resumed_rows = com_program.resume_from(sequence);
+
+                while let Some((_, row)) = resumed_rows.next_row().unwrap() {
+                    let column = match row.column() {
+                        gimli::ColumnType::LeftEdge => 0,
+                        gimli::ColumnType::Column(non_zero) => non_zero.get(),
+                    };
+
+                    let file_entry_idx = (row.file_index() - 1) as usize;
+                    let line = row.line().map(|line| line.get()).unwrap_or(0) as usize;
+
+                    line_infos.push(DwLineInfo {
+                        address: low_pc + row.address(),
+                        file_entry_idx: file_base_idx + file_entry_idx,
+                        line,
+                        col: column as usize,
+                    });
+                }
+            }
 
             dw_node_stack.clear();
             dw_node_stack.push((1, 0, root_symbol_name));
@@ -208,6 +345,9 @@ impl<'a> DwData<'a> {
                                     DwNode {
                                         ty,
                                         name: new_symbol_name,
+                                        decl_file: "",
+                                        decl_line: 0,
+                                        decl_column: 0,
                                         size: 0,
                                     },
                                 );
@@ -247,6 +387,9 @@ impl<'a> DwData<'a> {
                                     DwNode {
                                         ty: DwNodeType::Struct,
                                         name: new_symbol_name,
+                                        decl_file: "",
+                                        decl_line: 0,
+                                        decl_column: 0,
                                         size: 0,
                                     },
                                 );
@@ -264,6 +407,9 @@ impl<'a> DwData<'a> {
                         let mut linkage_name = "";
                         let mut name = "";
                         let mut specification = None;
+                        let mut decl_file = "";
+                        let mut decl_line = 0;
+                        let mut decl_column = 0;
                         let mut inlined = false;
                         let mut low_pc = 0;
                         let mut high_pc = 0;
@@ -299,6 +445,25 @@ impl<'a> DwData<'a> {
                                     if attr_value == DW_INL_inlined.0 {
                                         inlined = true;
                                     }
+                                }
+                                DW_AT_decl_file => {
+                                    let data1 = attr.udata_value().unwrap() as usize;
+
+                                    let file_name = file_names[data1 - 1];
+                                    let path_name = file_name
+                                        .path_name()
+                                        .string_value(&dwarf.debug_str)
+                                        .unwrap();
+                                    let path_name =
+                                        unsafe { str::from_utf8_unchecked(path_name.slice()) };
+
+                                    decl_file = path_name;
+                                }
+                                DW_AT_decl_line => {
+                                    decl_line = attr.udata_value().unwrap() as u32;
+                                }
+                                DW_AT_decl_column => {
+                                    decl_column = attr.udata_value().unwrap() as u32;
                                 }
                                 DW_AT_low_pc => match attr.raw_value() {
                                     AttributeValue::Addr(addr) => {
@@ -372,6 +537,9 @@ impl<'a> DwData<'a> {
                                             DwNodeType::FunctionInlinedInstance
                                         },
                                         name: function_symbol_name,
+                                        decl_file,
+                                        decl_line,
+                                        decl_column,
                                         size: high_pc as u32,
                                     },
                                 );
@@ -438,9 +606,19 @@ impl<'a> DwData<'a> {
         }
 
         println!("Dwarf parsing: {}s", (Instant::now() - start).as_secs_f32());
+        println!("Dwarf total rows: {}", total_rows);
+        println!(
+            "Dwarf sizes line_infos:'{}', file_entries:'{}'",
+            std::mem::size_of::<DwLineInfo>() * line_infos.len(),
+            std::mem::size_of::<DwFileEntry<'_>>() * file_entries.len()
+        );
+
+        line_infos.sort_by(|a, b| a.address.cmp(&b.address));
 
         Self {
             nodes: dw_node_tree,
+            line_infos,
+            file_entries,
         }
     }
 }
@@ -570,4 +748,9 @@ mod test {
             Some(("*const usize", "other::TraitName"))
         );
     }
+}
+
+#[inline(always)]
+fn dw_name_to_str<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a str {
+    unsafe { str::from_utf8_unchecked(slice.slice()) }
 }
