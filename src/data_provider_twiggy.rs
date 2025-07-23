@@ -1,8 +1,8 @@
 use crate::{
     arena::{Arena, array::Array, scratch::scratch_arena, string::String, vec::Vec},
     data_provider::{
-        CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
-        FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
+        DwarfLocationData, Filter, FunctionOp, FunctionProperty, FunctionPropertyDebugInfo,
+        FunctionsView, SourceCodeView, ViewMode,
     },
     dwarf::{DwData, DwFileEntry, DwLineInfo, DwNode, DwNodeType},
     gui::tree_view::{TreeItemStateFlags, TreeState},
@@ -12,7 +12,6 @@ use addr2line::{
     LookupResult,
     gimli::{EndianSlice, LittleEndian},
 };
-use gimli::FileEntry;
 use hashbrown::{DefaultHashBuilder, HashMap};
 use std::{
     fs::File,
@@ -46,13 +45,6 @@ pub struct DataProviderTwiggy<'a> {
 
     pub top_view_items_filtered: Vec<'a, usize>,
     pub dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState>,
-
-    /// The array of code locations loaded from the file.
-    code_locations: Array<'a, CodeLocation<'a>>,
-
-    /// This is a map of source file / line locations -> Assembly
-    locations_reverse_map: HashMap<u64, std::vec::Vec<u64>, DefaultHashBuilder, &'a Arena>,
-    addr_to_location: HashMap<u64, usize, DefaultHashBuilder, &'a Arena>,
 }
 
 impl<'a> DataProviderTwiggy<'a> {
@@ -95,8 +87,6 @@ impl<'a> DataProviderTwiggy<'a> {
         }
 
         let mut raw_data = Array::new(arena, item_count);
-        let modules = Addr2lineModules::parse(&wasm_data.bytes).ok();
-        let mut code_location_count = 0;
 
         for idx in 0..wasm_data.functions_section.function_count {
             let name = wasm_data.functions_section.function_names[idx];
@@ -124,10 +114,6 @@ impl<'a> DataProviderTwiggy<'a> {
             let (locals, function_ops) =
                 get_locals_and_ops_for_function(arena, wasm_data.bytes, &range);
 
-            if modules.is_some() {
-                code_location_count += function_ops.len();
-            }
-
             raw_data.push(FunctionData {
                 function_property: FunctionProperty {
                     raw_name: String::from_str(arena, name).to_str(),
@@ -142,55 +128,6 @@ impl<'a> DataProviderTwiggy<'a> {
                     function_ops,
                 },
             });
-        }
-
-        // Compute code locations
-        let mut code_locations = Array::new(arena, code_location_count);
-        // CL index -> addresses
-        let mut locations_reverse_map: HashMap<u64, std::vec::Vec<u64>, _, &'a Arena> =
-            HashMap::with_capacity_in(code_location_count, arena);
-        // Add -> CL index
-        let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
-            HashMap::with_capacity_in(code_location_count, arena);
-
-        let code_section_start = wasm_data.functions_section.range.start as u64;
-
-        if let Some(mut modules) = modules {
-            let (mut context, _) = modules
-                .context(code_section_start, false)
-                .expect("Failed to create module context")
-                .unwrap();
-
-            for raw_data_item in raw_data.iter() {
-                let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
-
-                for function_op in function_ops.iter() {
-                    let addr = function_op.address;
-                    if let Some(location_data) = find_frames(
-                        arena,
-                        addr.checked_sub(code_section_start).unwrap_or(0),
-                        &mut context,
-                    ) {
-                        if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
-                            let cl_index = code_locations.len();
-
-                            let mut hasher = DefaultHasher::new();
-                            file.as_str().hash(&mut hasher);
-                            line.saturating_sub(1).hash(&mut hasher);
-                            let hash = hasher.finish();
-
-                            code_locations.push(CodeLocation {
-                                file,
-                                line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
-                                column: 0,
-                            });
-                            addr_to_location.insert(addr, cl_index);
-
-                            locations_reverse_map.entry(hash).or_default().push(addr);
-                        }
-                    }
-                }
-            }
         }
 
         let top_view_items_filtered = Vec::new(arena, raw_data.len());
@@ -212,9 +149,6 @@ impl<'a> DataProviderTwiggy<'a> {
             total_percent: 0.0,
             top_view_items_filtered,
             dominator_state,
-            code_locations,
-            locations_reverse_map,
-            addr_to_location,
         };
         provider.recompute_index_map(Filter::All);
 
@@ -452,26 +386,17 @@ impl<'a> FunctionsView for DataProviderTwiggy<'a> {
 }
 
 impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
-    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<&CodeLocation<'a>> {
-        if let Some(index) = self.addr_to_location.get(&virtual_addr).copied() {
-            Some(&self.code_locations[index])
-        } else {
-            None
+    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<&DwLineInfo> {
+        let code_section_start = self.wasm_data.functions_section.range.start as u64;
+        let adjusted_addr = virtual_addr - code_section_start;
+
+        match self
+            .dw_line_infos
+            .binary_search_by(|line_info| line_info.address.cmp(&adjusted_addr))
+        {
+            Ok(idx) => self.dw_line_infos.get(idx),
+            Err(idx) => self.dw_line_infos.get(idx - 1),
         }
-    }
-
-    fn get_locations_for_line_of_code(
-        &self,
-        file: &str,
-        line: u32,
-        _column: u32,
-    ) -> Option<&std::vec::Vec<u64>> {
-        let mut hasher = DefaultHasher::new();
-        file.hash(&mut hasher);
-        line.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        self.locations_reverse_map.get(&hash)
     }
 }
 

@@ -1,6 +1,4 @@
-use crate::arena::memory::GB;
-use crate::arena::scratch::scratch_arena;
-use crate::arena::{self, Arena};
+use crate::arena::{Arena, memory::GB, scratch::scratch_arena, string};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
@@ -71,7 +69,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         let wasm_data = &data_provider.wasm_data;
 
                         let scratch = scratch_arena(&[]);
-                        let mut buffer = arena::string::String::new(&scratch, 1024);
+                        let mut buffer = string::String::new(&scratch, 1024);
 
                         _ = buffer.write_fmt(format_args!("Version: {}", wasm_data.version));
                         ui.label(buffer.as_str());
@@ -500,11 +498,24 @@ impl eframe::App for TemplateApp {
                                     )
                                 }
 
+                                let scratch = scratch_arena(&[]);
                                 let mut selected_file_path = "";
                                 if let Some(location) =
                                     data_provider.get_location_for_addr(first_selected_address)
                                 {
-                                    selected_file_path = location.file.as_str();
+                                    let file_entry =
+                                        &data_provider.dw_file_entries[location.file_entry_idx];
+
+                                    let mut file_name = string::String::new(&scratch, 1024);
+                                    file_name.push_str(file_entry.cu_directory);
+                                    file_name.push_str("/");
+                                    file_name.push_str(file_entry.directory);
+                                    file_name.push_str("/");
+                                    file_name.push_str(file_entry.file);
+
+                                    // println!("File name {}", file_name.as_str());
+                                    selected_file_path = file_name.to_str();
+
                                     if let Ok(source_code) = fs::read_to_string(selected_file_path)
                                     {
                                         for (idx, line) in source_code.lines().enumerate() {
@@ -520,13 +531,27 @@ impl eframe::App for TemplateApp {
                                                 data_provider.get_location_for_addr(*address)
                                             {
                                                 let color = colors_for_source
-                                                    .entry(location.line)
+                                                    .entry(location.line as u32)
                                                     .or_insert_with(|| {
                                                         current_color_idx += 1;
                                                         COLORS[current_color_idx % COLORS.len()]
                                                     });
+
+                                                let file_entry = &data_provider.dw_file_entries
+                                                    [location.file_entry_idx];
+
+                                                let mut line_file_name =
+                                                    string::String::new(&scratch, 1024);
+                                                line_file_name.push_str(file_entry.cu_directory);
+                                                line_file_name.push_str("/");
+                                                line_file_name.push_str(file_entry.directory);
+                                                line_file_name.push_str("/");
+                                                line_file_name.push_str(file_entry.file);
+
+                                                // println!("File name {}", line_file_name.as_str());
+
                                                 // code_viewer.highlight_line(location.line as usize, *color);
-                                                if location.file.as_str() == selected_file_path {
+                                                if selected_file_path == line_file_name.as_str() {
                                                     code_rows[location.line as usize].bg_color =
                                                         Some(*color);
                                                 }
@@ -536,7 +561,7 @@ impl eframe::App for TemplateApp {
                                                 asm_row_data.bg_color = Some(*color);
                                                 asm_row_data.tooltip = Some(format!(
                                                     "File: {}\nLine: {}",
-                                                    location.file.as_str(),
+                                                    line_file_name.as_str(),
                                                     location.line
                                                 ));
                                             }
