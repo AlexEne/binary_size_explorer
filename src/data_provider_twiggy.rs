@@ -1,25 +1,15 @@
 use crate::{
     arena::{Arena, array::Array, scratch::scratch_arena, string::String, vec::Vec},
     data_provider::{
-        DwarfLocationData, Filter, FunctionOp, FunctionProperty, FunctionPropertyDebugInfo,
-        FunctionsView, SourceCodeView, ViewMode,
+        Filter, FunctionOp, FunctionProperty, FunctionPropertyDebugInfo, FunctionsView,
+        SourceCodeView, ViewMode,
     },
     dwarf::{DwData, DwFileEntry, DwLineInfo, DwNode, DwNodeType},
     gui::tree_view::{TreeItemStateFlags, TreeState},
     wasm::parser::WasmData,
 };
-use addr2line::{
-    LookupResult,
-    gimli::{EndianSlice, LittleEndian},
-};
-use hashbrown::{DefaultHashBuilder, HashMap};
-use std::{
-    fs::File,
-    hash::{DefaultHasher, Hash, Hasher},
-    io::Read,
-};
+use std::{fs::File, io::Read};
 use std::{ops::Range, time::Instant};
-use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::{BinaryReader, ValType};
 
 pub struct FunctionItemState {
@@ -375,14 +365,6 @@ impl<'a> FunctionsView for DataProviderTwiggy<'a> {
     fn get_ops_at(&self, idx: usize) -> &[FunctionOp<'a>] {
         &self.raw_data[idx].debug_info.function_ops
     }
-
-    fn get_start_addr(&self, idx: usize) -> u64 {
-        let Some(first_op) = self.raw_data[idx].debug_info.function_ops.first() else {
-            return 0;
-        };
-
-        first_op.address
-    }
 }
 
 impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
@@ -400,36 +382,11 @@ impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
     }
 }
 
-fn find_frames<'a>(
-    arena: &'a Arena,
-    rel_addr: u64,
-    context: &mut addr2line::Context<EndianSlice<'a, LittleEndian>>,
-) -> Option<DwarfLocationData<'a>> {
-    let mut frames = match context.find_frames(rel_addr) {
-        LookupResult::Output(result) => result.ok()?,
-        LookupResult::Load { .. } => panic!("Split dwarf not supported"),
-    };
-
-    while let Ok(Some(frame)) = frames.next() {
-        if let Some(location) = frame.location.as_ref() {
-            return Some(DwarfLocationData {
-                file: location.file.map(|f| String::from_str(arena, f)),
-                line: location.line,
-                column: location.column,
-            });
-        }
-    }
-
-    return None;
-}
-
 #[cfg(test)]
 mod test {
     use crate::arena::memory::MB;
 
     use super::*;
-    use std::fs;
-    use wasm_tools::addr2line::Addr2lineModules;
 
     #[test]
     fn test_a_simple_wasm_function_that_returns_42() {
@@ -445,57 +402,6 @@ mod test {
         for idx in 0..3 {
             let ops = format!("{:?}", ops[idx].op);
             assert_eq!(ops, ref_ops[idx]);
-        }
-    }
-
-    #[test]
-    fn debug_loader_things() {
-        // let loader = Loader::new("wasm_test_with_debug.wasm").unwrap();
-        // let loc = loader.find_location(0x19e6).unwrap().unwrap();
-        let arena = Arena::new(2 * MB);
-        let addr_and_expectations = [
-            (
-                0x000213,
-                DwarfLocationData {
-                    file: Some(String::from_str(
-                        &arena,
-                        "/Users/alexene/Desktop/ws/simple_wasm_test_with_dwarf/src/lib.rs",
-                    )),
-                    line: Some(2),
-                    column: Some(0),
-                },
-            ),
-            (
-                0x000315,
-                DwarfLocationData {
-                    file: Some(String::from_str(
-                        &arena,
-                        "/rustc/05f9846f893b09a1be1fc8560e33fc3c815cfecb/library/core/src/fmt/mod.rs",
-                    )),
-                    line: Some(2652),
-                    column: Some(71),
-                },
-            ),
-        ];
-
-        let wasm_file_data = fs::read("simple_wasm_test_with_dwarf.wasm").unwrap();
-        let mut modules = Addr2lineModules::parse(&wasm_file_data).unwrap();
-
-        // MAGIC number: this is the byte where code section starts
-        let code_section_start = 521;
-        let (mut context, _) = modules
-            .context(code_section_start, false)
-            .expect("Failed to create module context")
-            .unwrap();
-
-        // Rev iter since I want to make sure there's no requirement on order of addresses.
-        // Not sure why modules is &mut tho :(
-        for (addr, expectation) in addr_and_expectations.iter().rev() {
-            let dwarf_loc =
-                find_frames(&arena, (*addr) - code_section_start, &mut context).unwrap();
-            assert_eq!(dwarf_loc.file, expectation.file);
-            assert_eq!(dwarf_loc.line, expectation.line);
-            assert_eq!(dwarf_loc.column, expectation.column);
         }
     }
 }

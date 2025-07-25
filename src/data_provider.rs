@@ -1,9 +1,6 @@
 use wasmparser::{Operator, ValType};
 
-use crate::{
-    arena::{array::Array, string::String},
-    dwarf::DwLineInfo,
-};
+use crate::{arena::array::Array, dwarf::DwLineInfo};
 
 #[derive(Clone, Copy)]
 pub struct FunctionProperty<'a> {
@@ -46,7 +43,6 @@ pub trait FunctionsView {
 
     fn get_locals_at(&self, idx: usize) -> &[(u32, ValType)];
     fn get_ops_at(&self, idx: usize) -> &[FunctionOp];
-    fn get_start_addr(&self, idx: usize) -> u64;
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -59,13 +55,6 @@ impl<'a> Filter<'a> {
     pub fn name_filter(name: &'a str) -> Self {
         Filter::NameFilter { name }
     }
-}
-
-#[derive(Debug)]
-pub struct DwarfLocationData<'a> {
-    pub file: Option<String<'a>>,
-    pub line: Option<u32>,
-    pub column: Option<u32>,
 }
 
 pub trait SourceCodeView {

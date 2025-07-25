@@ -9,5 +9,6 @@ mod dwarf;
 mod functions_explorer;
 mod gui;
 mod memory_viewer;
+mod path;
 mod wasm;
 pub use app::TemplateApp;

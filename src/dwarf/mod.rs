@@ -1,5 +1,8 @@
 use std::{
+    ffi::OsStr,
     hash::{DefaultHasher, Hash, Hasher},
+    os::unix::ffi::OsStrExt,
+    path::Path,
     time::Instant,
 };
 
@@ -7,7 +10,7 @@ use gimli::{
     AttributeValue, DW_AT_decl_column, DW_AT_decl_file, DW_AT_decl_line, DW_AT_high_pc,
     DW_AT_inline, DW_AT_linkage_name, DW_AT_low_pc, DW_AT_name, DW_AT_specification,
     DW_INL_inlined, DW_TAG_namespace, DW_TAG_structure_type, DW_TAG_subprogram, EndianSlice,
-    FileEntry, LittleEndian, UnitType,
+    LittleEndian, UnitType,
 };
 use hashbrown::{DefaultHashBuilder, HashMap};
 
@@ -32,11 +35,19 @@ pub enum DwNodeType {
     FunctionInlinedInstance,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DwFileEntry<'a> {
-    pub cu_directory: &'a str,
-    pub directory: &'a str,
-    pub file: &'a str,
+    /// For files local to the project, this
+    /// will be project's root directory.
+    pub base_directory: &'a Path,
+
+    /// This is the directory (relative to
+    /// the base directory, if not empty)
+    /// that contains the file.
+    pub directory: &'a Path,
+
+    /// The path to the file relative to the directory.
+    pub file: &'a Path,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -164,14 +175,7 @@ impl<'a> DwData<'a> {
             let unit = dwarf.unit(unit_header).unwrap();
             let unit_ref = unit.unit_ref(&dwarf);
 
-            if unit_ref.name.map(dw_name_to_str).unwrap_or("")
-                // == "src/main.rs/@/f1zk9xkhniznn42yvv4js6w6i"
-                == "src/main.rs/@/8val0uon1rrfnx5mhnt09rqpc"
-            {
-                println!("Break");
-            }
-
-            let comp_dir = unit_ref.comp_dir.map(dw_name_to_str).unwrap_or("");
+            let comp_dir = dw_option_slice_to_path(unit_ref.comp_dir);
 
             let Some(program) = unit.line_program.clone() else {
                 println!(
@@ -185,52 +189,49 @@ impl<'a> DwData<'a> {
 
             let file_base_idx = file_entries.len();
 
-            for (idx, file_name) in file_names.iter().enumerate() {
-                let file = file_name
-                    .path_name()
-                    .string_value(&dwarf.debug_str)
-                    .map(dw_name_to_str)
-                    .unwrap_or("");
+            for file_name in file_names {
+                let file =
+                    dw_option_slice_to_path(file_name.path_name().string_value(&dwarf.debug_str));
 
-                let directory = file_name
-                    .directory(program.header())
-                    .and_then(|directory| directory.string_value(&dwarf.debug_str))
-                    .map(dw_name_to_str)
-                    .unwrap_or("");
+                let directory = dw_option_slice_to_path(
+                    file_name
+                        .directory(program.header())
+                        .and_then(|directory| directory.string_value(&dwarf.debug_str)),
+                );
 
-                let cu_directory = if directory.starts_with("/") {
-                    ""
-                } else {
+                let cu_directory = if !directory.starts_with("/") {
                     comp_dir
+                } else {
+                    Path::new("")
                 };
 
                 file_entries.push(DwFileEntry {
-                    cu_directory,
+                    base_directory: cu_directory,
                     directory,
                     file,
                 });
-                println!(
-                    "File name: {idx}, {}/{}",
-                    unsafe {
-                        str::from_utf8_unchecked(
-                            file_name
-                                .directory(program.header())
-                                .unwrap()
-                                .string_value(&dwarf.debug_str)
-                                .unwrap()
-                                .slice(),
-                        )
-                    },
-                    unsafe {
-                        str::from_utf8_unchecked(
-                            file_name
-                                .path_name()
-                                .string_value(&dwarf.debug_str)
-                                .unwrap()
-                                .slice(),
-                        )
-                    }
-                );
+                // println!(
+                //     "File name: {idx}, {}/{}",
+                //     unsafe {
+                //         str::from_utf8_unchecked(
+                //             file_name
+                //                 .directory(program.header())
+                //                 .unwrap()
+                //                 .string_value(&dwarf.debug_str)
+                //                 .unwrap()
+                //                 .slice(),
+                //         )
+                //     },
+                //     unsafe {
+                //         str::from_utf8_unchecked(
+                //             file_name
+                //                 .path_name()
+                //                 .string_value(&dwarf.debug_str)
+                //                 .unwrap()
+                //                 .slice(),
+                //         )
+                //     }
+                // );
             }
 
             let (com_program, sequences) = program.clone().sequences().unwrap();
@@ -766,4 +767,14 @@ mod test {
 #[inline(always)]
 fn dw_name_to_str<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a str {
     unsafe { str::from_utf8_unchecked(slice.slice()) }
+}
+
+#[inline(always)]
+fn dw_slice_to_path<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a Path {
+    Path::new(OsStr::from_bytes(slice.slice()))
+}
+
+#[inline(always)]
+fn dw_option_slice_to_path<'a>(slice: Option<EndianSlice<'a, LittleEndian>>) -> &'a Path {
+    slice.map(dw_slice_to_path).unwrap_or(Path::new(""))
 }
