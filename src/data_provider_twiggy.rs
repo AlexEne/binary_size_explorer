@@ -1,25 +1,15 @@
 use crate::{
     arena::{Arena, array::Array, scratch::scratch_arena, string::String, vec::Vec},
     data_provider::{
-        CodeLocation, DwarfLocationData, Filter, FunctionOp, FunctionProperty,
-        FunctionPropertyDebugInfo, FunctionsView, SourceCodeView, ViewMode,
+        Filter, FunctionOp, FunctionProperty, FunctionPropertyDebugInfo, FunctionsView,
+        SourceCodeView, ViewMode,
     },
-    dwarf::{DwData, DwNode, DwNodeType},
+    dwarf::{DwData, DwFileEntry, DwLineInfo, DwNode, DwNodeType},
     gui::tree_view::{TreeItemStateFlags, TreeState},
     wasm::parser::WasmData,
 };
-use addr2line::{
-    LookupResult,
-    gimli::{EndianSlice, LittleEndian},
-};
-use hashbrown::{DefaultHashBuilder, HashMap};
-use std::{
-    fs::File,
-    hash::{DefaultHasher, Hash, Hasher},
-    io::Read,
-};
+use std::{fs::File, io::Read};
 use std::{ops::Range, time::Instant};
-use wasm_tools::addr2line::Addr2lineModules;
 use wasmparser::{BinaryReader, ValType};
 
 pub struct FunctionItemState {
@@ -34,6 +24,9 @@ pub struct FunctionData<'a> {
 pub struct DataProviderTwiggy<'a> {
     pub wasm_data: WasmData<'a>,
 
+    pub dw_line_infos: Array<'a, DwLineInfo>,
+    pub dw_file_entries: Array<'a, DwFileEntry<'a>>,
+
     pub view_mode: ViewMode,
     pub raw_data: Array<'a, FunctionData<'a>>,
 
@@ -42,13 +35,6 @@ pub struct DataProviderTwiggy<'a> {
 
     pub top_view_items_filtered: Vec<'a, usize>,
     pub dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState>,
-
-    /// The array of code locations loaded from the file.
-    code_locations: Array<'a, CodeLocation<'a>>,
-
-    /// This is a map of source file / line locations -> Assembly
-    locations_reverse_map: HashMap<u64, std::vec::Vec<u64>, DefaultHashBuilder, &'a Arena>,
-    addr_to_location: HashMap<u64, usize, DefaultHashBuilder, &'a Arena>,
 }
 
 impl<'a> DataProviderTwiggy<'a> {
@@ -91,8 +77,6 @@ impl<'a> DataProviderTwiggy<'a> {
         }
 
         let mut raw_data = Array::new(arena, item_count);
-        let modules = Addr2lineModules::parse(&wasm_data.bytes).ok();
-        let mut code_location_count = 0;
 
         for idx in 0..wasm_data.functions_section.function_count {
             let name = wasm_data.functions_section.function_names[idx];
@@ -120,10 +104,6 @@ impl<'a> DataProviderTwiggy<'a> {
             let (locals, function_ops) =
                 get_locals_and_ops_for_function(arena, wasm_data.bytes, &range);
 
-            if modules.is_some() {
-                code_location_count += function_ops.len();
-            }
-
             raw_data.push(FunctionData {
                 function_property: FunctionProperty {
                     raw_name: String::from_str(arena, name).to_str(),
@@ -140,55 +120,6 @@ impl<'a> DataProviderTwiggy<'a> {
             });
         }
 
-        // Compute code locations
-        let mut code_locations = Array::new(arena, code_location_count);
-        // CL index -> addresses
-        let mut locations_reverse_map: HashMap<u64, std::vec::Vec<u64>, _, &'a Arena> =
-            HashMap::with_capacity_in(code_location_count, arena);
-        // Add -> CL index
-        let mut addr_to_location: HashMap<u64, usize, _, &'a Arena> =
-            HashMap::with_capacity_in(code_location_count, arena);
-
-        let code_section_start = wasm_data.functions_section.range.start as u64;
-
-        if let Some(mut modules) = modules {
-            let (mut context, _) = modules
-                .context(code_section_start, false)
-                .expect("Failed to create module context")
-                .unwrap();
-
-            for raw_data_item in raw_data.iter() {
-                let FunctionPropertyDebugInfo { function_ops, .. } = &raw_data_item.debug_info;
-
-                for function_op in function_ops.iter() {
-                    let addr = function_op.address;
-                    if let Some(location_data) = find_frames(
-                        arena,
-                        addr.checked_sub(code_section_start).unwrap_or(0),
-                        &mut context,
-                    ) {
-                        if let (Some(file), Some(line)) = (location_data.file, location_data.line) {
-                            let cl_index = code_locations.len();
-
-                            let mut hasher = DefaultHasher::new();
-                            file.as_str().hash(&mut hasher);
-                            line.saturating_sub(1).hash(&mut hasher);
-                            let hash = hasher.finish();
-
-                            code_locations.push(CodeLocation {
-                                file,
-                                line: line.saturating_sub(1), //Dwarf lines are 1 based. 0 means no line info present :/
-                                column: 0,
-                            });
-                            addr_to_location.insert(addr, cl_index);
-
-                            locations_reverse_map.entry(hash).or_default().push(addr);
-                        }
-                    }
-                }
-            }
-        }
-
         let top_view_items_filtered = Vec::new(arena, raw_data.len());
         let dominator_state: TreeState<'a, DwNode<'a>, FunctionItemState> = TreeState::from_tree(
             arena,
@@ -200,15 +131,14 @@ impl<'a> DataProviderTwiggy<'a> {
 
         let mut provider = DataProviderTwiggy {
             wasm_data: wasm_data,
+            dw_line_infos: dw_data.line_infos,
+            dw_file_entries: dw_data.file_entries,
             view_mode: ViewMode::Tops,
             raw_data,
             total_size: 0,
             total_percent: 0.0,
             top_view_items_filtered,
             dominator_state,
-            code_locations,
-            locations_reverse_map,
-            addr_to_location,
         };
         provider.recompute_index_map(Filter::All);
 
@@ -435,61 +365,21 @@ impl<'a> FunctionsView for DataProviderTwiggy<'a> {
     fn get_ops_at(&self, idx: usize) -> &[FunctionOp<'a>] {
         &self.raw_data[idx].debug_info.function_ops
     }
-
-    fn get_start_addr(&self, idx: usize) -> u64 {
-        let Some(first_op) = self.raw_data[idx].debug_info.function_ops.first() else {
-            return 0;
-        };
-
-        first_op.address
-    }
 }
 
 impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
-    fn get_location_for_addr(&self, virtual_addr: u64) -> Option<&CodeLocation<'a>> {
-        if let Some(index) = self.addr_to_location.get(&virtual_addr).copied() {
-            Some(&self.code_locations[index])
-        } else {
-            None
+    fn get_line_info_for_addr(&self, virtual_addr: u64) -> Option<&DwLineInfo> {
+        let code_section_start = self.wasm_data.functions_section.range.start as u64;
+        let adjusted_addr = virtual_addr - code_section_start;
+
+        match self
+            .dw_line_infos
+            .binary_search_by(|line_info| line_info.address.cmp(&adjusted_addr))
+        {
+            Ok(idx) => self.dw_line_infos.get(idx),
+            Err(idx) => self.dw_line_infos.get(idx),
         }
     }
-
-    fn get_locations_for_line_of_code(
-        &self,
-        file: &str,
-        line: u32,
-        _column: u32,
-    ) -> Option<&std::vec::Vec<u64>> {
-        let mut hasher = DefaultHasher::new();
-        file.hash(&mut hasher);
-        line.hash(&mut hasher);
-        let hash = hasher.finish();
-
-        self.locations_reverse_map.get(&hash)
-    }
-}
-
-fn find_frames<'a>(
-    arena: &'a Arena,
-    rel_addr: u64,
-    context: &mut addr2line::Context<EndianSlice<'a, LittleEndian>>,
-) -> Option<DwarfLocationData<'a>> {
-    let mut frames = match context.find_frames(rel_addr) {
-        LookupResult::Output(result) => result.ok()?,
-        LookupResult::Load { .. } => panic!("Split dwarf not supported"),
-    };
-
-    while let Ok(Some(frame)) = frames.next() {
-        if let Some(location) = frame.location.as_ref() {
-            return Some(DwarfLocationData {
-                file: location.file.map(|f| String::from_str(arena, f)),
-                line: location.line,
-                column: location.column,
-            });
-        }
-    }
-
-    return None;
 }
 
 #[cfg(test)]
@@ -497,8 +387,6 @@ mod test {
     use crate::arena::memory::MB;
 
     use super::*;
-    use std::fs;
-    use wasm_tools::addr2line::Addr2lineModules;
 
     #[test]
     fn test_a_simple_wasm_function_that_returns_42() {
@@ -514,57 +402,6 @@ mod test {
         for idx in 0..3 {
             let ops = format!("{:?}", ops[idx].op);
             assert_eq!(ops, ref_ops[idx]);
-        }
-    }
-
-    #[test]
-    fn debug_loader_things() {
-        // let loader = Loader::new("wasm_test_with_debug.wasm").unwrap();
-        // let loc = loader.find_location(0x19e6).unwrap().unwrap();
-        let arena = Arena::new(2 * MB);
-        let addr_and_expectations = [
-            (
-                0x000213,
-                DwarfLocationData {
-                    file: Some(String::from_str(
-                        &arena,
-                        "/Users/alexene/Desktop/ws/simple_wasm_test_with_dwarf/src/lib.rs",
-                    )),
-                    line: Some(2),
-                    column: Some(0),
-                },
-            ),
-            (
-                0x000315,
-                DwarfLocationData {
-                    file: Some(String::from_str(
-                        &arena,
-                        "/rustc/05f9846f893b09a1be1fc8560e33fc3c815cfecb/library/core/src/fmt/mod.rs",
-                    )),
-                    line: Some(2652),
-                    column: Some(71),
-                },
-            ),
-        ];
-
-        let wasm_file_data = fs::read("simple_wasm_test_with_dwarf.wasm").unwrap();
-        let mut modules = Addr2lineModules::parse(&wasm_file_data).unwrap();
-
-        // MAGIC number: this is the byte where code section starts
-        let code_section_start = 521;
-        let (mut context, _) = modules
-            .context(code_section_start, false)
-            .expect("Failed to create module context")
-            .unwrap();
-
-        // Rev iter since I want to make sure there's no requirement on order of addresses.
-        // Not sure why modules is &mut tho :(
-        for (addr, expectation) in addr_and_expectations.iter().rev() {
-            let dwarf_loc =
-                find_frames(&arena, (*addr) - code_section_start, &mut context).unwrap();
-            assert_eq!(dwarf_loc.file, expectation.file);
-            assert_eq!(dwarf_loc.line, expectation.line);
-            assert_eq!(dwarf_loc.column, expectation.column);
         }
     }
 }

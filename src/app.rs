@@ -1,18 +1,18 @@
-use crate::arena::memory::GB;
-use crate::arena::scratch::scratch_arena;
-use crate::arena::{self, Arena};
+use crate::arena::{Arena, memory::GB, scratch::scratch_arena, string};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
 use crate::functions_explorer::FunctionsExplorer;
 use crate::memory_viewer::MemoryViewer;
+use crate::path::PathExt;
 use egui::{ComboBox, ScrollArea, Vec2b};
 use egui_file_dialog::FileDialog;
 use serde::ser::SerializeStruct;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Clone, Copy, serde::Deserialize, serde::Serialize)]
 pub enum FileType {
@@ -70,7 +70,7 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                         let wasm_data = &data_provider.wasm_data;
 
                         let scratch = scratch_arena(&[]);
-                        let mut buffer = arena::string::String::new(&scratch, 1024);
+                        let mut buffer = string::String::new(&scratch, 1024);
 
                         _ = buffer.write_fmt(format_args!("Version: {}", wasm_data.version));
                         ui.label(buffer.as_str());
@@ -211,7 +211,7 @@ impl DockTab {
 enum TabContent {
     SourceCodeViewer {
         code_viewer: CodeViewer,
-        file_path: String,
+        file_path: PathBuf,
         first_address: u64,
     },
     AssemblyViewer {
@@ -394,18 +394,19 @@ impl eframe::App for TemplateApp {
                             .show_functions_table(ui, data_provider);
 
                         if self.selected_row != self.functions_explorer.selected_row {
+                            let start = Instant::now();
+
                             self.selected_row = self.functions_explorer.selected_row;
                             if let Some(idx) = self.functions_explorer.selected_row {
-                                let (
-                                    mut asm_row_data,
-                                    op_start_idx,
-                                    ops_addresses,
-                                    first_selected_address,
-                                ): (
+                                let first_selected_address =
+                                    data_provider.wasm_data.functions_section.function_bodies[idx]
+                                        .range()
+                                        .start as u64;
+
+                                let (mut asm_row_data, op_start_idx, ops_addresses): (
                                     Vec<RowData>,
                                     usize,
                                     Vec<u64>,
-                                    u64,
                                 ) = {
                                     let mut row_data = Vec::new();
                                     let mut ops_addresses = Vec::new();
@@ -438,7 +439,6 @@ impl eframe::App for TemplateApp {
                                         row_data,
                                         data_provider.get_locals_at(idx).len(),
                                         ops_addresses,
-                                        data_provider.get_start_addr(idx),
                                     )
                                 };
 
@@ -453,11 +453,23 @@ impl eframe::App for TemplateApp {
                                     egui::Color32::LIGHT_GRAY,
                                 ];
 
-                                let mut selected_file_path = "";
-                                if let Some(location) =
-                                    data_provider.get_location_for_addr(first_selected_address)
+                                let scratch = scratch_arena(&[]);
+                                let mut selected_file_path = Path::new("");
+                                if let Some(line_info) =
+                                    data_provider.get_line_info_for_addr(first_selected_address)
                                 {
-                                    selected_file_path = location.file.as_str();
+                                    let file_entry = &data_provider.dw_file_entries
+                                        [line_info.file_entry_idx.saturating_sub(1)];
+
+                                    selected_file_path = PathExt::join_all(
+                                        &scratch,
+                                        &[
+                                            file_entry.base_directory,
+                                            file_entry.directory,
+                                            file_entry.file,
+                                        ],
+                                    );
+
                                     if let Ok(source_code) = fs::read_to_string(selected_file_path)
                                     {
                                         for (idx, line) in source_code.lines().enumerate() {
@@ -469,28 +481,44 @@ impl eframe::App for TemplateApp {
                                         }
 
                                         for (idx, address) in ops_addresses.iter().enumerate() {
-                                            if let Some(location) =
-                                                data_provider.get_location_for_addr(*address)
+                                            if let Some(line_info) =
+                                                data_provider.get_line_info_for_addr(*address)
                                             {
                                                 let color = colors_for_source
-                                                    .entry(location.line)
+                                                    .entry(line_info.line as u32)
                                                     .or_insert_with(|| {
                                                         current_color_idx += 1;
                                                         COLORS[current_color_idx % COLORS.len()]
                                                     });
+
+                                                let file_entry = &data_provider.dw_file_entries
+                                                    [line_info.file_entry_idx.saturating_sub(1)];
+
+                                                let line_file_path = PathExt::join_all(
+                                                    &scratch,
+                                                    &[
+                                                        file_entry.base_directory,
+                                                        file_entry.directory,
+                                                        file_entry.file,
+                                                    ],
+                                                );
+
                                                 // code_viewer.highlight_line(location.line as usize, *color);
-                                                if location.file.as_str() == selected_file_path {
-                                                    code_rows[location.line as usize].bg_color =
-                                                        Some(*color);
+                                                if selected_file_path == line_file_path {
+                                                    // Line '0' is not attributed to any source line
+                                                    // Lines are 1-based indexed
+                                                    if line_info.line != 0 {
+                                                        code_rows[line_info.line as usize - 1]
+                                                            .bg_color = Some(*color);
+                                                    }
                                                 }
 
                                                 let asm_row_data =
                                                     &mut asm_row_data[op_start_idx + idx];
                                                 asm_row_data.bg_color = Some(*color);
                                                 asm_row_data.tooltip = Some(format!(
-                                                    "File: {}\nLine: {}",
-                                                    location.file.as_str(),
-                                                    location.line
+                                                    "File: {:?}\nLine: {}\nColumn: {}",
+                                                    line_file_path, line_info.line, line_info.col
                                                 ));
                                             }
                                         }
@@ -506,7 +534,7 @@ impl eframe::App for TemplateApp {
                                         } => {
                                             if *first_address != first_selected_address {
                                                 *first_address = first_selected_address;
-                                                *file_path = String::from(selected_file_path);
+                                                *file_path = selected_file_path.to_path_buf();
 
                                                 code_viewer.set_row_data(code_rows.clone());
                                             }
@@ -521,6 +549,11 @@ impl eframe::App for TemplateApp {
                                     }
                                 });
                             }
+
+                            println!(
+                                "Select Row time: {}",
+                                (Instant::now() - start).as_secs_f32()
+                            );
                         }
                     }
                 }

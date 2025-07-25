@@ -1,5 +1,6 @@
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
+    path::Path,
     time::Instant,
 };
 
@@ -10,7 +11,10 @@ use gimli::{
 };
 use hashbrown::{DefaultHashBuilder, HashMap};
 
-use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree};
+use crate::{
+    arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree},
+    path::PathExt,
+};
 
 #[derive(Clone, Copy)]
 pub struct DwNode<'a> {
@@ -26,6 +30,29 @@ pub enum DwNodeType {
     Impl,
     FunctionInstance,
     FunctionInlinedInstance,
+}
+
+#[derive(Clone, Debug)]
+pub struct DwFileEntry<'a> {
+    /// For files local to the project, this
+    /// will be project's root directory.
+    pub base_directory: &'a Path,
+
+    /// This is the directory (relative to
+    /// the base directory, if not empty)
+    /// that contains the file.
+    pub directory: &'a Path,
+
+    /// The path to the file relative to the directory.
+    pub file: &'a Path,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DwLineInfo {
+    pub address: u64,
+    pub file_entry_idx: usize,
+    pub line: usize,
+    pub col: usize,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -59,6 +86,8 @@ impl<'a> SymbolName<'a> {
 
 pub struct DwData<'a> {
     pub nodes: Tree<'a, DwNode<'a>>,
+    pub line_infos: Array<'a, DwLineInfo>,
+    pub file_entries: Array<'a, DwFileEntry<'a>>,
 }
 
 impl<'a> DwData<'a> {
@@ -66,16 +95,6 @@ impl<'a> DwData<'a> {
         arena: &'a Arena,
         debug_sections: &Vec<(&'a str, &'a [u8]), &'a Arena>,
     ) -> Self {
-        let mut dw_node_tree = Tree::new(
-            arena,
-            1024,
-            DwNode {
-                ty: DwNodeType::Namespace,
-                name: SymbolName::root(),
-                size: 0,
-            },
-        );
-
         let start = Instant::now();
         let dwarf = gimli::Dwarf::load::<_, ()>(|section_id| {
             let section = debug_sections
@@ -87,7 +106,7 @@ impl<'a> DwData<'a> {
         })
         .expect("Failed to load the DWARF info");
 
-        let root_symbol_name = dw_node_tree.root().name;
+        let root_symbol_name = SymbolName::root();
 
         let scratch = scratch_arena(&[arena]);
         let mut dw_node_stack = Array::new(&scratch, 128);
@@ -96,6 +115,46 @@ impl<'a> DwData<'a> {
                 0, &scratch,
             );
 
+        let mut line_info_count = 0;
+        let mut file_entry_count = 0;
+
+        // First pass: compute number of file entries and line infos
+        let mut units = dwarf.units();
+        while let Ok(Some(unit_header)) = units.next() {
+            if unit_header.type_() != UnitType::Compilation {
+                continue;
+            }
+
+            let unit = dwarf.unit(unit_header).unwrap();
+            let Some(program) = unit.line_program.clone() else {
+                continue;
+            };
+            file_entry_count += program.header().file_names().len();
+
+            let (com_program, sequences) = program.clone().sequences().unwrap();
+            for sequence in &sequences {
+                let mut resumed_rows = com_program.resume_from(sequence);
+
+                while let Some(_) = resumed_rows.next_row().unwrap() {
+                    line_info_count += 1;
+                }
+            }
+        }
+
+        let mut line_infos = Array::new(arena, line_info_count);
+        let mut file_entries = Array::new(arena, file_entry_count);
+
+        let mut dw_node_tree = Tree::new(
+            arena,
+            1024,
+            DwNode {
+                ty: DwNodeType::Namespace,
+                name: SymbolName::root(),
+                size: 0,
+            },
+        );
+
+        // Second pass: actually process line info, file entries and DIEs.
         let mut units = dwarf.units();
         while let Ok(Some(unit_header)) = units.next() {
             if unit_header.type_() != UnitType::Compilation {
@@ -106,9 +165,76 @@ impl<'a> DwData<'a> {
             let unit = dwarf.unit(unit_header).unwrap();
             let unit_ref = unit.unit_ref(&dwarf);
 
+            let Some(program) = unit_ref.line_program.clone() else {
+                println!(
+                    "Skipping unit '{}': missing line program!",
+                    unit.name.map(dw_slice_to_str).unwrap_or("")
+                );
+                continue;
+            };
+
+            let comp_dir = dw_option_slice_to_path(unit_ref.comp_dir);
+            let file_names = program.header().file_names();
+            let file_base_idx = file_entries.len();
+
+            // Process file entries.
+            // At the moment, we are okay with duplications (i.e., the
+            // same file entry might be referenced on multiple compilation
+            // units and consequently they will be added to the file_entries
+            // array multiple times).
+            for file_name in file_names {
+                let file =
+                    dw_option_slice_to_path(file_name.path_name().string_value(&dwarf.debug_str));
+
+                let directory = dw_option_slice_to_path(
+                    file_name
+                        .directory(program.header())
+                        .and_then(|directory| directory.string_value(&dwarf.debug_str)),
+                );
+
+                // Base directory is only relevant if the current directory+file is
+                // not an absolute path.
+                let base_directory = if !directory.is_absolute() {
+                    comp_dir
+                } else {
+                    Path::new("")
+                };
+
+                file_entries.push(DwFileEntry {
+                    base_directory,
+                    directory,
+                    file,
+                });
+            }
+
+            // Execute the line program.
+            let (com_program, sequences) = program.clone().sequences().unwrap();
+            for sequence in &sequences {
+                let mut resumed_rows = com_program.resume_from(sequence);
+
+                while let Some((_, row)) = resumed_rows.next_row().unwrap() {
+                    let column = match row.column() {
+                        gimli::ColumnType::LeftEdge => 0,
+                        gimli::ColumnType::Column(non_zero) => non_zero.get(),
+                    };
+
+                    let address = row.address();
+                    let file_entry_idx = row.file_index() as usize;
+                    let line = row.line().map(|line| line.get()).unwrap_or(0) as usize;
+
+                    line_infos.push(DwLineInfo {
+                        address,
+                        file_entry_idx: file_base_idx + file_entry_idx,
+                        line,
+                        col: column as usize,
+                    });
+                }
+            }
+
             dw_node_stack.clear();
             dw_node_stack.push((1, 0, root_symbol_name));
 
+            // Process DIEs
             let mut entries = unit_ref.entries_raw(None).unwrap();
             let mut baseline_depth = 0;
             while !entries.is_empty() {
@@ -438,9 +564,19 @@ impl<'a> DwData<'a> {
         }
 
         println!("Dwarf parsing: {}s", (Instant::now() - start).as_secs_f32());
+        println!("Dwarf total rows: {}", line_info_count);
+        println!(
+            "Dwarf sizes line_infos:'{}', file_entries:'{}'",
+            std::mem::size_of::<DwLineInfo>() * line_infos.len(),
+            std::mem::size_of::<DwFileEntry<'_>>() * file_entries.len()
+        );
+
+        line_infos.sort_by(|a, b| a.address.cmp(&b.address));
 
         Self {
             nodes: dw_node_tree,
+            line_infos,
+            file_entries,
         }
     }
 }
@@ -570,4 +706,19 @@ mod test {
             Some(("*const usize", "other::TraitName"))
         );
     }
+}
+
+#[inline(always)]
+fn dw_slice_to_str<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a str {
+    unsafe { str::from_utf8_unchecked(slice.slice()) }
+}
+
+#[inline(always)]
+fn dw_slice_to_path<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a Path {
+    PathExt::from_slice(slice.slice())
+}
+
+#[inline(always)]
+fn dw_option_slice_to_path<'a>(slice: Option<EndianSlice<'a, LittleEndian>>) -> &'a Path {
+    slice.map(dw_slice_to_path).unwrap_or(Path::new(""))
 }
