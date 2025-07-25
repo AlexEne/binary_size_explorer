@@ -2,6 +2,7 @@ use crate::arena::{Arena, memory::GB, scratch::scratch_arena, string};
 use crate::code_viewer::{CodeViewer, RowData};
 use crate::data_provider::{FunctionsView, SourceCodeView};
 use crate::data_provider_twiggy::DataProviderTwiggy;
+use crate::disassembler::WASMDisassemblerViewer;
 use crate::functions_explorer::FunctionsExplorer;
 use crate::memory_viewer::MemoryViewer;
 use crate::path::PathExt;
@@ -33,6 +34,8 @@ pub struct FileEntry {
 struct TabViewer<'a> {
     /// All the file entries currently loaded.
     file_entries: &'a Vec<FileEntry>,
+
+    selected_row: &'a mut Option<usize>,
 }
 
 impl egui_dock::TabViewer for TabViewer<'_> {
@@ -48,8 +51,15 @@ impl egui_dock::TabViewer for TabViewer<'_> {
                 code_viewer.show_code_as_table(ui);
             }
 
-            TabContent::AssemblyViewer { asm, .. } => {
-                asm.show_code_as_table(ui);
+            TabContent::AssemblyViewer { function_idx } => {
+                if let Some(data_provider) = &self.file_entries[0].data_provider {
+                    WASMDisassemblerViewer::view_function(
+                        ui,
+                        data_provider,
+                        *function_idx,
+                        self.selected_row,
+                    );
+                }
             }
 
             TabContent::RawBinaryViewer { file_index } => {
@@ -215,8 +225,9 @@ enum TabContent {
         first_address: u64,
     },
     AssemblyViewer {
-        asm: CodeViewer,
-        first_address: u64,
+        function_idx: usize,
+        // asm: CodeViewer,
+        // first_address: u64,
     },
     RawBinaryViewer {
         file_index: usize,
@@ -539,12 +550,15 @@ impl eframe::App for TemplateApp {
                                                 code_viewer.set_row_data(code_rows.clone());
                                             }
                                         }
-                                        TabContent::AssemblyViewer { asm, first_address } => {
-                                            if *first_address != first_selected_address {
-                                                *first_address = first_selected_address;
-                                                asm.set_row_data(asm_row_data.clone());
-                                            }
+                                        TabContent::AssemblyViewer { function_idx } => {
+                                            *function_idx = idx;
                                         }
+                                        // TabContent::AssemblyViewer { asm, first_address } => {
+                                        //     if *first_address != first_selected_address {
+                                        //         *first_address = first_selected_address;
+                                        //         asm.set_row_data(asm_row_data.clone());
+                                        //     }
+                                        // }
                                         _ => {}
                                     }
                                 });
@@ -574,12 +588,21 @@ impl eframe::App for TemplateApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Self {
-                tree, file_entries, ..
+                tree,
+                file_entries,
+                selected_row,
+                ..
             } = self;
 
             egui_dock::DockArea::new(tree)
                 .style(egui_dock::Style::from_egui(ctx.style().as_ref()))
-                .show(ctx, &mut TabViewer { file_entries });
+                .show(
+                    ctx,
+                    &mut TabViewer {
+                        file_entries,
+                        selected_row,
+                    },
+                );
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 egui::warn_if_debug_build(ui);
@@ -616,13 +639,7 @@ impl TemplateApp {
 
                     // Reset the tree.
                     self.tree = egui_dock::DockState::new(vec![
-                        DockTab::new(
-                            "WASM",
-                            TabContent::AssemblyViewer {
-                                asm: CodeViewer::for_language("wasm"),
-                                first_address: 0,
-                            },
-                        ),
+                        DockTab::new("WASM", TabContent::AssemblyViewer { function_idx: 0 }),
                         DockTab::new(
                             "Source Code",
                             TabContent::SourceCodeViewer {
