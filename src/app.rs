@@ -476,7 +476,7 @@ impl eframe::App for TemplateApp {
 
                                 let mut line_info = None;
                                 for idx in 0..line_infos.len() {
-                                    if line_infos[idx].address == instruction_address {
+                                    if line_infos[idx].address >= instruction_address {
                                         println!(
                                             "Addresses {} {}",
                                             line_infos[idx].address, instruction_address
@@ -547,13 +547,16 @@ impl eframe::App for TemplateApp {
                                                 line_file_name.push_str(file_entry.directory);
                                                 line_file_name.push_str("/");
                                                 line_file_name.push_str(file_entry.file);
-
+                                                let line_file_name = line_file_name.to_str();
                                                 // println!("File name {}", line_file_name.as_str());
 
                                                 // code_viewer.highlight_line(location.line as usize, *color);
-                                                if selected_file_path == line_file_name.as_str() {
-                                                    code_rows[location.line as usize].bg_color =
-                                                        Some(*color);
+                                                if selected_file_path == line_file_name {
+                                                    // Line '0' is not attributed to any source line
+                                                    if location.line != 0 {
+                                                        code_rows[location.line as usize - 1]
+                                                            .bg_color = Some(*color);
+                                                    }
                                                 }
 
                                                 let asm_row_data =
@@ -561,8 +564,7 @@ impl eframe::App for TemplateApp {
                                                 asm_row_data.bg_color = Some(*color);
                                                 asm_row_data.tooltip = Some(format!(
                                                     "File: {}\nLine: {}",
-                                                    line_file_name.as_str(),
-                                                    location.line
+                                                    line_file_name, location.line
                                                 ));
                                             }
                                         }

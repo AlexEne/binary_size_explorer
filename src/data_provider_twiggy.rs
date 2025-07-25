@@ -395,7 +395,7 @@ impl<'a> SourceCodeView for DataProviderTwiggy<'a> {
             .binary_search_by(|line_info| line_info.address.cmp(&adjusted_addr))
         {
             Ok(idx) => self.dw_line_infos.get(idx),
-            Err(idx) => self.dw_line_infos.get(idx - 1),
+            Err(idx) => self.dw_line_infos.get(idx),
         }
     }
 }

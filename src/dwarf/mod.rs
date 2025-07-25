@@ -164,8 +164,14 @@ impl<'a> DwData<'a> {
             let unit = dwarf.unit(unit_header).unwrap();
             let unit_ref = unit.unit_ref(&dwarf);
 
+            if unit_ref.name.map(dw_name_to_str).unwrap_or("")
+                // == "src/main.rs/@/f1zk9xkhniznn42yvv4js6w6i"
+                == "src/main.rs/@/8val0uon1rrfnx5mhnt09rqpc"
+            {
+                println!("Break");
+            }
+
             let comp_dir = unit_ref.comp_dir.map(dw_name_to_str).unwrap_or("");
-            let low_pc = unit_ref.low_pc;
 
             let Some(program) = unit.line_program.clone() else {
                 println!(
@@ -179,7 +185,7 @@ impl<'a> DwData<'a> {
 
             let file_base_idx = file_entries.len();
 
-            for file_name in file_names {
+            for (idx, file_name) in file_names.iter().enumerate() {
                 let file = file_name
                     .path_name()
                     .string_value(&dwarf.debug_str)
@@ -192,33 +198,39 @@ impl<'a> DwData<'a> {
                     .map(dw_name_to_str)
                     .unwrap_or("");
 
+                let cu_directory = if directory.starts_with("/") {
+                    ""
+                } else {
+                    comp_dir
+                };
+
                 file_entries.push(DwFileEntry {
-                    cu_directory: comp_dir,
+                    cu_directory,
                     directory,
                     file,
                 });
-                // println!(
-                //     "File name: {idx}, {}/{}",
-                //     unsafe {
-                //         str::from_utf8_unchecked(
-                //             file_name
-                //                 .directory(program.header())
-                //                 .unwrap()
-                //                 .string_value(&dwarf.debug_str)
-                //                 .unwrap()
-                //                 .slice(),
-                //         )
-                //     },
-                //     unsafe {
-                //         str::from_utf8_unchecked(
-                //             file_name
-                //                 .path_name()
-                //                 .string_value(&dwarf.debug_str)
-                //                 .unwrap()
-                //                 .slice(),
-                //         )
-                //     }
-                // );
+                println!(
+                    "File name: {idx}, {}/{}",
+                    unsafe {
+                        str::from_utf8_unchecked(
+                            file_name
+                                .directory(program.header())
+                                .unwrap()
+                                .string_value(&dwarf.debug_str)
+                                .unwrap()
+                                .slice(),
+                        )
+                    },
+                    unsafe {
+                        str::from_utf8_unchecked(
+                            file_name
+                                .path_name()
+                                .string_value(&dwarf.debug_str)
+                                .unwrap()
+                                .slice(),
+                        )
+                    }
+                );
             }
 
             let (com_program, sequences) = program.clone().sequences().unwrap();
@@ -231,11 +243,12 @@ impl<'a> DwData<'a> {
                         gimli::ColumnType::Column(non_zero) => non_zero.get(),
                     };
 
+                    let address = row.address();
                     let file_entry_idx = (row.file_index() - 1) as usize;
                     let line = row.line().map(|line| line.get()).unwrap_or(0) as usize;
 
                     line_infos.push(DwLineInfo {
-                        address: low_pc + row.address(),
+                        address,
                         file_entry_idx: file_base_idx + file_entry_idx,
                         line,
                         col: column as usize,
