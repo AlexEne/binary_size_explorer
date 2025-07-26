@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsStr,
     hash::{DefaultHasher, Hash, Hasher},
     path::Path,
     time::Instant,
@@ -11,10 +12,7 @@ use gimli::{
 };
 use hashbrown::{DefaultHashBuilder, HashMap};
 
-use crate::{
-    arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree},
-    path::PathExt,
-};
+use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree};
 
 #[derive(Clone, Copy)]
 pub struct DwNode<'a> {
@@ -715,7 +713,11 @@ fn dw_slice_to_str<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a str {
 
 #[inline(always)]
 fn dw_slice_to_path<'a>(slice: EndianSlice<'a, LittleEndian>) -> &'a Path {
-    PathExt::from_slice(slice.slice())
+    // TODO (bruno): this is most likely incorrect!
+    // The assumption here is that dwarf will produce somewhat correct
+    // OsStrings, but this could be wrong or what would happen if the user
+    // loads a binary produced on a different environment (different OS even)?
+    Path::new(unsafe { OsStr::from_encoded_bytes_unchecked(slice.slice()) })
 }
 
 #[inline(always)]
