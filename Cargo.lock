@@ -258,6 +258,7 @@ dependencies = [
  "egui_extras",
  "emath",
  "env_logger",
+ "foldhash",
  "gimli 0.32.0",
  "hashbrown",
  "libc",

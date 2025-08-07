@@ -10,9 +10,16 @@ use gimli::{
     DW_AT_specification, DW_INL_inlined, DW_TAG_namespace, DW_TAG_structure_type,
     DW_TAG_subprogram, EndianSlice, LittleEndian, UnitType,
 };
-use hashbrown::{DefaultHashBuilder, HashMap};
+// use hashbrown::{DefaultHashBuilder, HashMap};
 
-use crate::arena::{Arena, array::Array, scratch::scratch_arena, string::String, tree::Tree};
+use crate::arena::{
+    Arena,
+    array::Array,
+    hash_map::{DefaultHashBuilder, HashMap},
+    scratch::scratch_arena,
+    string::String,
+    tree::Tree,
+};
 
 #[derive(Clone, Copy)]
 pub struct DwNode<'a> {
@@ -109,8 +116,10 @@ impl<'a> DwData<'a> {
         let scratch = scratch_arena(&[arena]);
         let mut dw_node_stack = Array::new(&scratch, 128);
         let mut dw_node_name_lookup =
-            HashMap::<SymbolName<'a>, usize, DefaultHashBuilder, &Arena>::with_capacity_in(
-                0, &scratch,
+            HashMap::<'_, SymbolName<'a>, usize, DefaultHashBuilder>::with_hasher(
+                &scratch,
+                4096 * 512,
+                DefaultHashBuilder::default(),
             );
 
         let mut line_info_count = 0;
@@ -462,9 +471,12 @@ impl<'a> DwData<'a> {
                                     .string_value(&dwarf.debug_str)
                                     .unwrap();
                                 let name = unsafe { str::from_utf8_unchecked(name.slice()) };
-                                let index = *dw_node_name_lookup
+                                let Some(index) = dw_node_name_lookup
                                     .get(&SymbolName::new_with_parent(SymbolName::root(), name))
-                                    .unwrap();
+                                    .copied()
+                                else {
+                                    panic!("Failed to get name: {}", name);
+                                };
 
                                 debug_assert!(
                                     matches!(

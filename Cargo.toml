@@ -24,6 +24,7 @@ eframe = { version = "0.31", default-features = false, features = [
 emath = "0.31"
 env_logger = "0.11.8"
 # Same features as std lib
+foldhash = { version = "0.1.2", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = [
     'rustc-dep-of-std',
 ] }

@@ -6,6 +6,7 @@ use std::{
 };
 
 pub mod array;
+pub mod hash_map;
 pub mod scratch;
 pub mod string;
 pub mod tree;
@@ -249,6 +250,13 @@ impl Arena {
 
         self.offset.set(end);
         unsafe { NonNull::slice_from_raw_parts(self.buffer.add(start), end - start) }
+    }
+
+    #[track_caller]
+    pub fn alloc_raw_zeroed(&self, size: usize, align: usize) -> NonNull<[u8]> {
+        let ptr = self.alloc_raw(size, align);
+        unsafe { ptr.cast::<u8>().as_ptr().write_bytes(0, size) }
+        ptr
     }
 
     pub fn dealloc(&self, ptr: NonNull<u8>, size: usize) {
